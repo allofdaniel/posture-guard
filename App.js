@@ -50,12 +50,9 @@ Notifications.setNotificationHandler({
 const POSTURE_STATUS = { GOOD: 'good', WARNING: 'warning', BAD: 'bad' };
 
 const ONBOARDING_DATA = [
-  { title: '자세 교정 알리미', description: '바른 자세 습관을 만들어
-건강한 일상을 시작하세요', icon: '🧘' },
-  { title: '실시간 모니터링', description: '카메라로 자세를 분석하고
-흐트러지면 바로 알려드려요', icon: '📱' },
-  { title: '맞춤 알림 설정', description: '진동, 소리 알림을 선택하고
-민감도를 조절할 수 있어요', icon: '🔔' },
+  { title: '자세 교정 알리미', description: '바른 자세 습관을 만들어\n건강한 일상을 시작하세요', icon: '🧘' },
+  { title: '실시간 모니터링', description: '카메라로 자세를 분석하고\n흐트러지면 바로 알려드려요', icon: '📱' },
+  { title: '맞춤 알림 설정', description: '진동, 소리 알림을 선택하고\n민감도를 조절할 수 있어요', icon: '🔔' },
 ];
 
 const OnboardingScreen = React.memo(({ onComplete }) => {
@@ -106,10 +103,8 @@ const PermissionScreen = React.memo(({ onRequestPermission }) => (
         <Text style={styles.permissionIcon}>📷</Text>
       </View>
       <Text style={styles.permissionTitle}>카메라 권한 필요</Text>
-      <Text style={styles.permissionText}>자세를 분석하기 위해{'
-'}카메라 접근 권한이 필요합니다.</Text>
-      <Text style={styles.permissionNote}>촬영된 영상은 기기에서만 처리되며{'
-'}외부로 전송되지 않습니다.</Text>
+      <Text style={styles.permissionText}>자세를 분석하기 위해{'\n'}카메라 접근 권한이 필요합니다.</Text>
+      <Text style={styles.permissionNote}>촬영된 영상은 기기에서만 처리되며{'\n'}외부로 전송되지 않습니다.</Text>
       <TouchableOpacity style={styles.permissionButton} onPress={onRequestPermission}>
         <Text style={styles.permissionButtonText}>권한 허용하기</Text>
       </TouchableOpacity>
