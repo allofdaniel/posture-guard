@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "자세 교정 알리미",
+    "name": "Posture Guard",
     "slug": "posture-guard",
-    "version": "1.0.0",
+    "version": "1.2.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -11,11 +11,14 @@
       "resizeMode": "contain",
       "backgroundColor": "#6366F1"
     },
+    "locales": {
+      "ko": "./locales/ko.json"
+    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.allofdaniel.postureguard",
       "infoPlist": {
-        "NSCameraUsageDescription": "자세 감지를 위해 카메라 접근이 필요합니다.",
+        "NSCameraUsageDescription": "Camera is used as a mirror to help you check your posture.",
         "UIBackgroundModes": [
           "fetch",
           "processing"
@@ -31,17 +34,25 @@
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.VIBRATE",
-        "android.permission.FOREGROUND_SERVICE",
-        "android.permission.WAKE_LOCK",
-        "android.permission.RECEIVE_BOOT_COMPLETED",
-        "android.permission.RECORD_AUDIO"
+        "android.permission.POST_NOTIFICATIONS"
       ]
     },
     "plugins": [
       [
+        "expo-build-properties",
+        {
+          "android": {
+            "compileSdkVersion": 35,
+            "targetSdkVersion": 35,
+            "minSdkVersion": 24
+          }
+        }
+      ],
+      [
         "expo-camera",
         {
-          "cameraPermission": "자세 감지를 위해 카메라 접근이 필요합니다."
+          "cameraPermission": "Camera is used as a mirror to help you check your posture.",
+          "recordAudioAndroid": false
         }
       ],
       [
@@ -52,10 +63,13 @@
         }
       ],
       [
+        "expo-localization"
+      ],
+      [
         "react-native-google-mobile-ads",
         {
           "androidAppId": "ca-app-pub-7278941489904900~6411429869",
-          "iosAppId": "ca-app-pub-7278941489904900~6411429869"
+          "iosAppId": "ca-app-pub-xxxxxxxxxxxxxxxx~yyyyyyyyyy"
         }
       ]
     ],

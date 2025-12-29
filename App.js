@@ -6,23 +6,179 @@ import {
   TouchableOpacity,
   SafeAreaView,
   Platform,
-  Dimensions,
   Alert,
   Switch,
   AppState,
   Modal,
   ScrollView,
   Animated,
+  useWindowDimensions,
+  Linking,
+  ActivityIndicator,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
 import * as Notifications from 'expo-notifications';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { BannerAd, BannerAdSize, TestIds } from 'react-native-google-mobile-ads';
+import * as Localization from 'expo-localization';
+import AdBanner from './AdBanner';
 
-const BANNER_AD_UNIT_ID = __DEV__ ? TestIds.BANNER : 'ca-app-pub-7278941489904900/5206159407';
-const { width, height } = Dimensions.get('window');
+// Constants for configuration
+const CONFIG = {
+  SENSITIVITY_LEVELS: { LOW: 0.1, MEDIUM: 0.3, HIGH: 0.5 },
+  MONITORING_INTERVAL: 3000,  // 3 seconds
+  SESSION_INTERVAL: 1000,     // 1 second
+  GOOD_POSTURE_INCREMENT: 3,  // seconds
+  BAD_POSTURE_THRESHOLD: 2,   // count before alert
+  BUTTON_DEBOUNCE: 500,       // ms
+  POSTURE_THRESHOLD: {
+    BAD_BASE: 0.15,
+    BAD_MULTIPLIER: 0.1,
+    WARNING_BASE: 0.3,
+    WARNING_MULTIPLIER: 0.15,
+  },
+  VALIDATION_LIMITS: {
+    TOTAL_ALERTS: 1000000,
+    SESSION_TIME: 86400 * 365,  // 1 year in seconds
+    SESSIONS_COUNT: 100000,
+  },
+};
+
+// Internationalization - English as default, Korean as secondary
+const TRANSLATIONS = {
+  en: {
+    appName: 'Posture Guard',
+    appSubtitle: 'Stay healthy with good posture',
+    onboarding: [
+      { title: 'Posture Guard', description: 'Build healthy posture habits\nfor a better daily life', icon: '🧘' },
+      { title: 'Visual Reminder', description: 'Use camera as a mirror\nwith timed posture reminders', icon: '📱' },
+      { title: 'Custom Alerts', description: 'Choose vibration or sound alerts\nand adjust reminder frequency', icon: '🔔' },
+    ],
+    next: 'Next',
+    getStarted: 'Get Started',
+    skip: 'Skip',
+    pageOfTotal: 'Page {current} of {total}',
+    cameraPermissionTitle: 'Camera Permission Required',
+    cameraPermissionText: 'Camera is used as a mirror\nto help you check your posture.',
+    cameraPermissionNote: 'Video is displayed locally as a visual reference\nand never recorded or sent externally.',
+    allowPermission: 'Allow Permission',
+    openSettings: 'Open Settings',
+    permissionDeniedNote: 'Permission was denied. Please enable camera access in Settings.',
+    loading: 'Loading...',
+    checkingPermission: 'Checking permission...',
+    settings: 'Settings',
+    statistics: 'Statistics',
+    sensitivity: 'Reminder Frequency',
+    sensitivityDesc: 'Higher frequency gives more frequent posture reminders',
+    low: 'Low',
+    medium: 'Medium',
+    high: 'High',
+    relaxed: 'Relaxed',
+    recommended: 'Recommended',
+    strict: 'Strict',
+    alertSettings: 'Alert Settings',
+    vibrationAlert: 'Vibration Alert',
+    vibrationAlertDesc: 'Vibrate when reminder activates',
+    pushAlert: 'Push Notification',
+    pushAlertDesc: 'Show notification at top of screen',
+    info: 'Information',
+    privacyPolicy: 'Privacy Policy',
+    version: 'Posture Guard v1.2.0',
+    totalAlerts: 'Total Alerts',
+    totalMonitoringTime: 'Total Monitoring Time',
+    sessionCount: 'Session Count',
+    goodPostureRate: 'Good Posture Rate',
+    statsNote: 'Build healthy posture habits with regular use!',
+    alerts: 'Alerts',
+    currentSession: 'Current Session',
+    totalSessions: 'Total Sessions',
+    startMonitoring: 'Start Monitoring',
+    stopMonitoring: 'Stop Monitoring',
+    sessionTime: 'Session Time',
+    guideText: 'Press start button\nto begin posture reminders',
+    guideHint: 'Use the camera as a mirror to check your posture',
+    goodPosture: 'Good Posture',
+    warning: 'Caution',
+    needCorrection: 'Check Your Posture!',
+    alertTitle: 'Time to Check Your Posture!',
+    alertBody: 'Take a moment to check and correct your posture.',
+    privacyPolicyContent: 'Privacy Policy & Disclaimer\n\nDATA COLLECTION\n• Camera: Used as a mirror only, never recorded or transmitted\n• Usage stats: Session counts and times stored locally on device\n• Advertising: Google Mobile Ads may use anonymized device ID\n\nDATA STORAGE\n• All data stored locally on your device\n• No external servers or cloud storage used\n• You can clear data anytime via device settings\n\nYOUR RIGHTS\n• Access, modify, or delete your data anytime\n• Disable notifications in app settings\n• Opt-out of personalized ads in device settings\n\nDISCLAIMER\nThis app is NOT a medical device. It provides timed reminders only and does not diagnose, treat, or prevent any medical condition. Consult healthcare professionals for medical concerns.\n\nContact: allofdaniel@gmail.com',
+    ok: 'OK',
+    times: 'times',
+  },
+  ko: {
+    appName: '자세 알리미',
+    appSubtitle: '바른 자세로 건강하게',
+    onboarding: [
+      { title: '자세 알리미', description: '바른 자세 습관을 만들어\n건강한 일상을 시작하세요', icon: '🧘' },
+      { title: '자세 확인 거울', description: '카메라를 거울처럼 사용하고\n주기적으로 자세 알림을 받아요', icon: '📱' },
+      { title: '맞춤 알림 설정', description: '진동, 소리 알림을 선택하고\n민감도를 조절할 수 있어요', icon: '🔔' },
+    ],
+    next: '다음',
+    getStarted: '시작하기',
+    skip: '건너뛰기',
+    pageOfTotal: '페이지 {current} / {total}',
+    cameraPermissionTitle: '카메라 권한 필요',
+    cameraPermissionText: '카메라를 거울처럼 사용하여\n자세를 확인할 수 있습니다.',
+    cameraPermissionNote: '촬영된 영상은 기기에서만 처리되며\n외부로 전송되지 않습니다.',
+    allowPermission: '권한 허용하기',
+    openSettings: '설정 열기',
+    permissionDeniedNote: '권한이 거부되었습니다. 설정에서 카메라 권한을 허용해주세요.',
+    loading: '로딩 중...',
+    checkingPermission: '권한 확인 중...',
+    settings: '설정',
+    statistics: '통계',
+    sensitivity: '알림 빈도',
+    sensitivityDesc: '빈도가 높을수록 자세 확인 알림을 더 자주 받습니다',
+    low: '낮음',
+    medium: '중간',
+    high: '높음',
+    relaxed: '여유있게',
+    recommended: '권장',
+    strict: '엄격하게',
+    alertSettings: '알림 설정',
+    vibrationAlert: '진동 알림',
+    vibrationAlertDesc: '자세 확인 시간에 진동으로 알림',
+    pushAlert: '푸시 알림',
+    pushAlertDesc: '화면 상단에 알림 표시',
+    info: '정보',
+    privacyPolicy: '개인정보처리방침',
+    version: '자세 알리미 v1.2.0',
+    totalAlerts: '총 알림 횟수',
+    totalMonitoringTime: '총 모니터링 시간',
+    sessionCount: '세션 횟수',
+    goodPostureRate: '바른 자세 비율',
+    statsNote: '꾸준한 사용으로 바른 자세 습관을 만들어보세요!',
+    alerts: '알림',
+    currentSession: '현재 세션',
+    totalSessions: '총 세션',
+    startMonitoring: '모니터링 시작',
+    stopMonitoring: '모니터링 중지',
+    sessionTime: '세션 시간',
+    guideText: '시작 버튼을 눌러\n자세 알림을 시작하세요',
+    guideHint: '카메라를 거울처럼 사용해 자세를 확인하세요',
+    goodPosture: '좋은 자세',
+    warning: '주의',
+    needCorrection: '자세 확인 필요!',
+    alertTitle: '자세 확인 시간!',
+    alertBody: '잠시 멈추고 자세를 확인해보세요.',
+    privacyPolicyContent: '개인정보처리방침 및 면책조항\n\n데이터 수집\n• 카메라: 거울처럼 화면에만 표시되며, 녹화나 전송되지 않습니다\n• 사용 통계: 세션 횟수와 시간이 기기에만 저장됩니다\n• 광고: Google Mobile Ads가 익명화된 기기 ID를 사용할 수 있습니다\n\n데이터 저장\n• 모든 데이터는 사용자 기기에만 저장됩니다\n• 외부 서버나 클라우드 저장소를 사용하지 않습니다\n• 기기 설정에서 언제든 데이터를 삭제할 수 있습니다\n\n사용자 권리\n• 언제든 데이터에 접근, 수정, 삭제할 수 있습니다\n• 앱 설정에서 알림을 끌 수 있습니다\n• 기기 설정에서 맞춤 광고를 거부할 수 있습니다\n\n면책조항\n이 앱은 의료기기가 아닙니다. 주기적인 자세 확인 알림만 제공하며, 어떠한 의료 상태도 진단, 치료, 예방하지 않습니다. 의료 관련 사항은 전문 의료인과 상담하세요.\n\n문의: allofdaniel@gmail.com',
+    ok: '확인',
+    times: '회',
+  },
+};
+
+// Get device locale and set language (default to English)
+const getDeviceLanguage = () => {
+  try {
+    const locale = Localization.locale || 'en';
+    const langCode = locale.split('-')[0].toLowerCase();
+    return TRANSLATIONS[langCode] ? langCode : 'en';
+  } catch {
+    return 'en';
+  }
+};
 
 const COLORS = {
   primary: '#6366F1',
@@ -37,6 +193,8 @@ const COLORS = {
   textSecondary: '#94A3B8',
   textMuted: '#64748B',
   border: '#475569',
+  overlay: 'rgba(0,0,0,0.6)',
+  overlayStrong: 'rgba(0,0,0,0.7)',
 };
 
 Notifications.setNotificationHandler({
@@ -49,45 +207,56 @@ Notifications.setNotificationHandler({
 
 const POSTURE_STATUS = { GOOD: 'good', WARNING: 'warning', BAD: 'bad' };
 
-const ONBOARDING_DATA = [
-  { title: '자세 교정 알리미', description: '바른 자세 습관을 만들어\n건강한 일상을 시작하세요', icon: '🧘' },
-  { title: '실시간 모니터링', description: '카메라로 자세를 분석하고\n흐트러지면 바로 알려드려요', icon: '📱' },
-  { title: '맞춤 알림 설정', description: '진동, 소리 알림을 선택하고\n민감도를 조절할 수 있어요', icon: '🔔' },
-];
-
-const OnboardingScreen = React.memo(({ onComplete }) => {
+const OnboardingScreen = React.memo(({ onComplete, t }) => {
   const [currentPage, setCurrentPage] = useState(0);
   const fadeAnim = useRef(new Animated.Value(1)).current;
+
   const handleNext = useCallback(() => {
-    if (currentPage < ONBOARDING_DATA.length - 1) {
+    if (currentPage < t.onboarding.length - 1) {
       Animated.sequence([
         Animated.timing(fadeAnim, { toValue: 0, duration: 150, useNativeDriver: true }),
         Animated.timing(fadeAnim, { toValue: 1, duration: 150, useNativeDriver: true }),
       ]).start();
       setCurrentPage(prev => prev + 1);
-    } else { onComplete(); }
-  }, [currentPage, fadeAnim, onComplete]);
-  const data = ONBOARDING_DATA[currentPage];
+    } else {
+      onComplete();
+    }
+  }, [currentPage, fadeAnim, onComplete, t.onboarding.length]);
+
+  const data = t.onboarding[currentPage];
+
   return (
     <SafeAreaView style={styles.onboardingContainer}>
       <StatusBar style="light" />
       <Animated.View style={[styles.onboardingContent, { opacity: fadeAnim }]}>
-        <Text style={styles.onboardingIcon}>{data.icon}</Text>
-        <Text style={styles.onboardingTitle}>{data.title}</Text>
+        <Text style={styles.onboardingIcon} accessibilityLabel={data.title}>{data.icon}</Text>
+        <Text style={styles.onboardingTitle} accessibilityRole="header">{data.title}</Text>
         <Text style={styles.onboardingDescription}>{data.description}</Text>
       </Animated.View>
       <View style={styles.onboardingFooter}>
-        <View style={styles.onboardingDots}>
-          {ONBOARDING_DATA.map((_, index) => (
+        <View style={styles.onboardingDots} accessibilityLabel={t.pageOfTotal.replace('{current}', currentPage + 1).replace('{total}', t.onboarding.length)}>
+          {t.onboarding.map((_, index) => (
             <View key={index} style={[styles.onboardingDot, index === currentPage && styles.onboardingDotActive]} />
           ))}
         </View>
-        <TouchableOpacity style={styles.onboardingButton} onPress={handleNext}>
-          <Text style={styles.onboardingButtonText}>{currentPage < ONBOARDING_DATA.length - 1 ? '다음' : '시작하기'}</Text>
+        <TouchableOpacity
+          style={styles.onboardingButton}
+          onPress={handleNext}
+          accessibilityRole="button"
+          accessibilityLabel={currentPage < t.onboarding.length - 1 ? t.next : t.getStarted}
+        >
+          <Text style={styles.onboardingButtonText}>
+            {currentPage < t.onboarding.length - 1 ? t.next : t.getStarted}
+          </Text>
         </TouchableOpacity>
-        {currentPage < ONBOARDING_DATA.length - 1 && (
-          <TouchableOpacity style={styles.skipButton} onPress={onComplete}>
-            <Text style={styles.skipButtonText}>건너뛰기</Text>
+        {currentPage < t.onboarding.length - 1 && (
+          <TouchableOpacity
+            style={styles.skipButton}
+            onPress={onComplete}
+            accessibilityRole="button"
+            accessibilityLabel={t.skip}
+          >
+            <Text style={styles.skipButtonText}>{t.skip}</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -95,28 +264,56 @@ const OnboardingScreen = React.memo(({ onComplete }) => {
   );
 });
 
-const PermissionScreen = React.memo(({ onRequestPermission }) => (
-  <SafeAreaView style={styles.container}>
-    <StatusBar style="light" />
-    <View style={styles.permissionContent}>
-      <View style={styles.permissionIconContainer}>
-        <Text style={styles.permissionIcon}>📷</Text>
+const PermissionScreen = React.memo(({ onRequestPermission, isDenied, t }) => {
+  const handleOpenSettings = useCallback(() => {
+    Linking.openSettings();
+  }, []);
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <StatusBar style="light" />
+      <View style={styles.permissionContent}>
+        <View style={styles.permissionIconContainer}>
+          <Text style={styles.permissionIcon} accessibilityLabel={t.cameraPermissionTitle}>📷</Text>
+        </View>
+        <Text style={styles.permissionTitle} accessibilityRole="header">{t.cameraPermissionTitle}</Text>
+        <Text style={styles.permissionText}>{t.cameraPermissionText}</Text>
+        <Text style={styles.permissionNote}>
+          {isDenied ? t.permissionDeniedNote : t.cameraPermissionNote}
+        </Text>
+        {isDenied ? (
+          <TouchableOpacity
+            style={styles.permissionButton}
+            onPress={handleOpenSettings}
+            accessibilityRole="button"
+            accessibilityLabel={t.openSettings}
+          >
+            <Text style={styles.permissionButtonText}>{t.openSettings}</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity
+            style={styles.permissionButton}
+            onPress={onRequestPermission}
+            accessibilityRole="button"
+            accessibilityLabel={t.allowPermission}
+          >
+            <Text style={styles.permissionButtonText}>{t.allowPermission}</Text>
+          </TouchableOpacity>
+        )}
       </View>
-      <Text style={styles.permissionTitle}>카메라 권한 필요</Text>
-      <Text style={styles.permissionText}>자세를 분석하기 위해{'\n'}카메라 접근 권한이 필요합니다.</Text>
-      <Text style={styles.permissionNote}>촬영된 영상은 기기에서만 처리되며{'\n'}외부로 전송되지 않습니다.</Text>
-      <TouchableOpacity style={styles.permissionButton} onPress={onRequestPermission}>
-        <Text style={styles.permissionButtonText}>권한 허용하기</Text>
-      </TouchableOpacity>
-    </View>
-  </SafeAreaView>
-));
+    </SafeAreaView>
+  );
+});
 
 const StatCard = React.memo(({ icon, value, label, color }) => (
-  <View style={[styles.statCard, { borderLeftColor: color || COLORS.primary }]}>
-    <Text style={styles.statIcon}>{icon}</Text>
-    <Text style={styles.statValue}>{value}</Text>
-    <Text style={styles.statLabel}>{label}</Text>
+  <View
+    style={[styles.statCard, { borderLeftColor: color || COLORS.primary }]}
+    accessibilityLabel={`${label}: ${value}`}
+    accessibilityRole="text"
+  >
+    <Text style={styles.statIcon} accessibilityElementsHidden>{icon}</Text>
+    <Text style={styles.statValue} accessibilityElementsHidden>{value}</Text>
+    <Text style={styles.statLabel} accessibilityElementsHidden>{label}</Text>
   </View>
 ));
 
@@ -126,25 +323,43 @@ const SettingItem = React.memo(({ label, description, value, onValueChange, isLa
       <Text style={styles.settingLabel}>{label}</Text>
       {description && <Text style={styles.settingDescription}>{description}</Text>}
     </View>
-    <Switch value={value} onValueChange={onValueChange} trackColor={{ false: COLORS.surfaceLight, true: COLORS.primary }} thumbColor={value ? '#fff' : COLORS.textSecondary} />
+    <Switch
+      value={value}
+      onValueChange={onValueChange}
+      trackColor={{ false: COLORS.surfaceLight, true: COLORS.primary }}
+      thumbColor={value ? '#fff' : COLORS.textSecondary}
+      accessibilityLabel={label}
+      accessibilityHint={description}
+      accessibilityRole="switch"
+    />
   </View>
 ));
 
-const SettingsModal = React.memo(({ visible, onClose, sensitivity, setSensitivity, vibrationEnabled, setVibrationEnabled, alertEnabled, setAlertEnabled, saveSettings, onShowPrivacyPolicy }) => (
-  <Modal visible={visible} animationType="slide" transparent={true}>
+const SettingsModal = React.memo(({ visible, onClose, sensitivity, setSensitivity, vibrationEnabled, setVibrationEnabled, alertEnabled, setAlertEnabled, saveSettings, onShowPrivacyPolicy, t }) => (
+  <Modal visible={visible} animationType="slide" transparent={true} onRequestClose={onClose}>
     <View style={styles.modalOverlay}>
       <View style={styles.modalContent}>
         <View style={styles.modalHeader}>
-          <Text style={styles.modalTitle}>설정</Text>
-          <TouchableOpacity onPress={onClose} style={styles.modalCloseButton}><Text style={styles.modalCloseText}>✕</Text></TouchableOpacity>
+          <Text style={styles.modalTitle}>{t.settings}</Text>
+          <TouchableOpacity onPress={onClose} style={styles.modalCloseButton} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+            <Text style={styles.modalCloseText}>✕</Text>
+          </TouchableOpacity>
         </View>
         <ScrollView style={styles.modalBody}>
           <View style={styles.settingsSection}>
-            <Text style={styles.sectionTitle}>감지 민감도</Text>
-            <Text style={styles.sectionDescription}>민감도가 높을수록 작은 자세 변화도 감지합니다</Text>
+            <Text style={styles.sectionTitle}>{t.sensitivity}</Text>
+            <Text style={styles.sectionDescription}>{t.sensitivityDesc}</Text>
             <View style={styles.sensitivityContainer}>
-              {[{ value: 0.1, label: '낮음', desc: '여유있게' }, { value: 0.3, label: '중간', desc: '권장' }, { value: 0.5, label: '높음', desc: '엄격하게' }].map((item) => (
-                <TouchableOpacity key={item.value} style={[styles.sensitivityOption, sensitivity === item.value && styles.sensitivityOptionActive]} onPress={() => { setSensitivity(item.value); saveSettings('sensitivity', item.value); }}>
+              {[
+                { value: 0.1, label: t.low, desc: t.relaxed },
+                { value: 0.3, label: t.medium, desc: t.recommended },
+                { value: 0.5, label: t.high, desc: t.strict }
+              ].map((item) => (
+                <TouchableOpacity
+                  key={item.value}
+                  style={[styles.sensitivityOption, sensitivity === item.value && styles.sensitivityOptionActive]}
+                  onPress={() => { setSensitivity(item.value); saveSettings('sensitivity', item.value); }}
+                >
                   <Text style={[styles.sensitivityLabel, sensitivity === item.value && styles.sensitivityLabelActive]}>{item.label}</Text>
                   <Text style={[styles.sensitivityDesc, sensitivity === item.value && styles.sensitivityDescActive]}>{item.desc}</Text>
                 </TouchableOpacity>
@@ -152,19 +367,32 @@ const SettingsModal = React.memo(({ visible, onClose, sensitivity, setSensitivit
             </View>
           </View>
           <View style={styles.settingsSection}>
-            <Text style={styles.sectionTitle}>알림 설정</Text>
+            <Text style={styles.sectionTitle}>{t.alertSettings}</Text>
             <View style={styles.settingsList}>
-              <SettingItem label="진동 알림" description="자세가 흐트러지면 진동으로 알림" value={vibrationEnabled} onValueChange={(value) => { setVibrationEnabled(value); saveSettings('vibrationEnabled', value); }} />
-              <SettingItem label="푸시 알림" description="화면 상단에 알림 표시" value={alertEnabled} onValueChange={(value) => { setAlertEnabled(value); saveSettings('alertEnabled', value); }} isLast />
+              <SettingItem
+                label={t.vibrationAlert}
+                description={t.vibrationAlertDesc}
+                value={vibrationEnabled}
+                onValueChange={(value) => { setVibrationEnabled(value); saveSettings('vibrationEnabled', value); }}
+              />
+              <SettingItem
+                label={t.pushAlert}
+                description={t.pushAlertDesc}
+                value={alertEnabled}
+                onValueChange={(value) => { setAlertEnabled(value); saveSettings('alertEnabled', value); }}
+                isLast
+              />
             </View>
           </View>
           <View style={styles.settingsSection}>
-            <Text style={styles.sectionTitle}>정보</Text>
+            <Text style={styles.sectionTitle}>{t.info}</Text>
             <TouchableOpacity style={styles.infoButton} onPress={onShowPrivacyPolicy}>
-              <Text style={styles.infoButtonText}>개인정보처리방침</Text>
+              <Text style={styles.infoButtonText}>{t.privacyPolicy}</Text>
               <Text style={styles.infoButtonArrow}>›</Text>
             </TouchableOpacity>
-            <View style={styles.appInfo}><Text style={styles.appInfoText}>자세 교정 알리미 v1.0.0</Text></View>
+            <View style={styles.appInfo}>
+              <Text style={styles.appInfoText}>{t.version}</Text>
+            </View>
           </View>
         </ScrollView>
       </View>
@@ -172,22 +400,26 @@ const SettingsModal = React.memo(({ visible, onClose, sensitivity, setSensitivit
   </Modal>
 ));
 
-const StatsModal = React.memo(({ visible, onClose, stats }) => (
-  <Modal visible={visible} animationType="slide" transparent={true}>
+const StatsModal = React.memo(({ visible, onClose, stats, t }) => (
+  <Modal visible={visible} animationType="slide" transparent={true} onRequestClose={onClose}>
     <View style={styles.modalOverlay}>
       <View style={styles.modalContent}>
         <View style={styles.modalHeader}>
-          <Text style={styles.modalTitle}>통계</Text>
-          <TouchableOpacity onPress={onClose} style={styles.modalCloseButton}><Text style={styles.modalCloseText}>✕</Text></TouchableOpacity>
+          <Text style={styles.modalTitle}>{t.statistics}</Text>
+          <TouchableOpacity onPress={onClose} style={styles.modalCloseButton} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+            <Text style={styles.modalCloseText}>✕</Text>
+          </TouchableOpacity>
         </View>
         <ScrollView style={styles.modalBody}>
           <View style={styles.statsGrid}>
-            <StatCard icon="🔔" value={stats.totalAlerts} label="총 알림 횟수" color={COLORS.warning} />
-            <StatCard icon="⏱️" value={stats.totalSessionTime} label="총 모니터링 시간" color={COLORS.primary} />
-            <StatCard icon="📊" value={stats.sessionsCount} label="세션 횟수" color={COLORS.success} />
-            <StatCard icon="✨" value={stats.goodPostureRate} label="바른 자세 비율" color={COLORS.success} />
+            <StatCard icon="🔔" value={stats.totalAlerts} label={t.totalAlerts} color={COLORS.warning} />
+            <StatCard icon="⏱️" value={stats.totalSessionTime} label={t.totalMonitoringTime} color={COLORS.primary} />
+            <StatCard icon="📊" value={stats.sessionsCount} label={t.sessionCount} color={COLORS.success} />
+            <StatCard icon="✨" value={stats.goodPostureRate} label={t.goodPostureRate} color={COLORS.success} />
           </View>
-          <View style={styles.statsNote}><Text style={styles.statsNoteText}>꾸준한 사용으로 바른 자세 습관을 만들어보세요!</Text></View>
+          <View style={styles.statsNote}>
+            <Text style={styles.statsNoteText}>{t.statsNote}</Text>
+          </View>
         </ScrollView>
       </View>
     </View>
@@ -195,6 +427,13 @@ const StatsModal = React.memo(({ visible, onClose, stats }) => (
 ));
 
 export default function App() {
+  // Use reactive dimensions hook for orientation changes
+  const { width, height } = useWindowDimensions();
+
+  // Language state
+  const [lang, setLang] = useState('en');
+  const t = useMemo(() => TRANSLATIONS[lang] || TRANSLATIONS.en, [lang]);
+
   const [permission, requestPermission] = useCameraPermissions();
   const [showOnboarding, setShowOnboarding] = useState(true);
   const [isOnboardingChecked, setIsOnboardingChecked] = useState(false);
@@ -211,32 +450,88 @@ export default function App() {
   const [goodPostureTime, setGoodPostureTime] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
   const [showStats, setShowStats] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+
   const cameraRef = useRef(null);
   const monitoringInterval = useRef(null);
   const sessionInterval = useRef(null);
   const appState = useRef(AppState.currentState);
   const pulseAnim = useRef(new Animated.Value(1)).current;
+  const pulseAnimationRef = useRef(null);
+  const isMountedRef = useRef(true);
+
+  // Refs for latest values to avoid stale closures in callbacks
+  const sessionTimeRef = useRef(sessionTime);
+  const totalSessionTimeRef = useRef(totalSessionTime);
+  const goodPostureTimeRef = useRef(goodPostureTime);
+
+  // Keep refs in sync with state
+  useEffect(() => { sessionTimeRef.current = sessionTime; }, [sessionTime]);
+  useEffect(() => { totalSessionTimeRef.current = totalSessionTime; }, [totalSessionTime]);
+  useEffect(() => { goodPostureTimeRef.current = goodPostureTime; }, [goodPostureTime]);
+
+  // Initialize language on mount
+  useEffect(() => {
+    const initLanguage = async () => {
+      try {
+        const savedLang = await AsyncStorage.getItem('appLanguage');
+        if (savedLang && TRANSLATIONS[savedLang]) {
+          setLang(savedLang);
+        } else {
+          const deviceLang = getDeviceLanguage();
+          setLang(deviceLang);
+          await AsyncStorage.setItem('appLanguage', deviceLang);
+        }
+      } catch (error) {
+        console.error('Language init error:', error);
+        setLang('en');
+      }
+    };
+    initLanguage();
+  }, []);
 
   useEffect(() => {
     const checkOnboarding = async () => {
       try {
         const hasSeenOnboarding = await AsyncStorage.getItem('hasSeenOnboarding');
-        if (hasSeenOnboarding === 'true') setShowOnboarding(false);
-      } catch (error) { console.error('Onboarding check error:', error); }
+        if (hasSeenOnboarding === 'true') {
+          setShowOnboarding(false);
+        }
+      } catch (error) {
+        console.error('Onboarding check error:', error);
+      }
       setIsOnboardingChecked(true);
     };
     checkOnboarding();
   }, []);
 
   const completeOnboarding = useCallback(async () => {
-    try { await AsyncStorage.setItem('hasSeenOnboarding', 'true'); } catch (error) { console.error('Onboarding save error:', error); }
+    try {
+      await AsyncStorage.setItem('hasSeenOnboarding', 'true');
+    } catch (error) {
+      console.error('Onboarding save error:', error);
+    }
     setShowOnboarding(false);
+  }, []);
+
+  // Cleanup isMounted on unmount
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
   }, []);
 
   useEffect(() => {
     const requestNotificationPermission = async () => {
-      const { status } = await Notifications.requestPermissionsAsync();
-      if (status !== 'granted') console.log('Notification permission not granted');
+      try {
+        const { status } = await Notifications.requestPermissionsAsync();
+        if (status !== 'granted') {
+          console.log('Notification permission not granted');
+        }
+      } catch (error) {
+        console.error('Notification permission error:', error);
+      }
     };
     requestNotificationPermission();
   }, []);
@@ -247,44 +542,77 @@ export default function App() {
         const keys = ['sensitivity', 'alertEnabled', 'vibrationEnabled', 'totalAlerts', 'totalSessionTime', 'sessionsCount', 'goodPostureTime'];
         const results = await AsyncStorage.multiGet(keys);
         const settings = Object.fromEntries(results);
-        if (settings.sensitivity) setSensitivity(parseFloat(settings.sensitivity));
+
+        if (settings.sensitivity) {
+          const parsedSensitivity = parseFloat(settings.sensitivity);
+          if (!isNaN(parsedSensitivity) && parsedSensitivity >= CONFIG.SENSITIVITY_LEVELS.LOW && parsedSensitivity <= CONFIG.SENSITIVITY_LEVELS.HIGH) {
+            setSensitivity(parsedSensitivity);
+          }
+        }
         if (settings.alertEnabled) setAlertEnabled(settings.alertEnabled === 'true');
         if (settings.vibrationEnabled) setVibrationEnabled(settings.vibrationEnabled === 'true');
-        if (settings.totalAlerts) setTotalAlerts(parseInt(settings.totalAlerts));
-        if (settings.totalSessionTime) setTotalSessionTime(parseInt(settings.totalSessionTime));
-        if (settings.sessionsCount) setSessionsCount(parseInt(settings.sessionsCount));
-        if (settings.goodPostureTime) setGoodPostureTime(parseInt(settings.goodPostureTime));
-      } catch (error) { console.error('Settings load error:', error); }
+
+        // Validate numeric values with bounds checking
+        const safeParseInt = (value, max = Number.MAX_SAFE_INTEGER) => {
+          const parsed = parseInt(value, 10);
+          if (isNaN(parsed) || parsed < 0) return 0;
+          return Math.min(parsed, max);
+        };
+
+        if (settings.totalAlerts) setTotalAlerts(safeParseInt(settings.totalAlerts, CONFIG.VALIDATION_LIMITS.TOTAL_ALERTS));
+        if (settings.totalSessionTime) setTotalSessionTime(safeParseInt(settings.totalSessionTime, CONFIG.VALIDATION_LIMITS.SESSION_TIME));
+        if (settings.sessionsCount) setSessionsCount(safeParseInt(settings.sessionsCount, CONFIG.VALIDATION_LIMITS.SESSIONS_COUNT));
+        if (settings.goodPostureTime) setGoodPostureTime(safeParseInt(settings.goodPostureTime, CONFIG.VALIDATION_LIMITS.SESSION_TIME));
+      } catch (error) {
+        console.error('Settings load error:', error);
+      }
     };
     loadSettings();
   }, []);
 
   const saveSettings = useCallback(async (key, value) => {
-    try { await AsyncStorage.setItem(key, value.toString()); } catch (error) { console.error('Settings save error:', error); }
+    try {
+      await AsyncStorage.setItem(key, String(value));
+    } catch (error) {
+      console.error('Settings save error:', error);
+    }
   }, []);
+
+  const saveSessionStats = useCallback(async () => {
+    try {
+      // Use refs to get the latest values and avoid stale closures
+      const currentSessionTime = sessionTimeRef.current;
+      const currentTotalSessionTime = totalSessionTimeRef.current;
+      const currentGoodPostureTime = goodPostureTimeRef.current;
+
+      const newTotalTime = currentTotalSessionTime + currentSessionTime;
+      await AsyncStorage.multiSet([
+        ['totalSessionTime', String(newTotalTime)],
+        ['goodPostureTime', String(currentGoodPostureTime)]
+      ]);
+      setTotalSessionTime(newTotalTime);
+    } catch (error) {
+      console.error('Session stats save error:', error);
+    }
+  }, []); // Empty deps - uses refs for latest values
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', nextAppState => {
       if (appState.current === 'active' && nextAppState.match(/inactive|background/)) {
-        if (isMonitoring) saveSessionStats();
+        if (isMonitoring) {
+          saveSessionStats();
+        }
       }
       appState.current = nextAppState;
     });
     return () => subscription.remove();
-  }, [isMonitoring]);
-
-  const saveSessionStats = useCallback(async () => {
-    try {
-      const newTotalTime = totalSessionTime + sessionTime;
-      await AsyncStorage.multiSet([['totalSessionTime', newTotalTime.toString()], ['goodPostureTime', goodPostureTime.toString()]]);
-      setTotalSessionTime(newTotalTime);
-    } catch (error) { console.error('Session stats save error:', error); }
-  }, [sessionTime, totalSessionTime, goodPostureTime]);
+  }, [isMonitoring, saveSessionStats]);
 
   const simulatePostureCheck = useCallback(() => {
     const random = Math.random();
-    const badThreshold = 0.15 + (sensitivity * 0.1);
-    const warningThreshold = 0.3 + (sensitivity * 0.15);
+    const badThreshold = CONFIG.POSTURE_THRESHOLD.BAD_BASE + (sensitivity * CONFIG.POSTURE_THRESHOLD.BAD_MULTIPLIER);
+    const warningThreshold = CONFIG.POSTURE_THRESHOLD.WARNING_BASE + (sensitivity * CONFIG.POSTURE_THRESHOLD.WARNING_MULTIPLIER);
+
     if (random < badThreshold) return POSTURE_STATUS.BAD;
     if (random < warningThreshold) return POSTURE_STATUS.WARNING;
     return POSTURE_STATUS.GOOD;
@@ -294,41 +622,92 @@ export default function App() {
     const newTotalAlerts = totalAlerts + 1;
     setTotalAlerts(newTotalAlerts);
     saveSettings('totalAlerts', newTotalAlerts);
-    if (vibrationEnabled) await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-    if (alertEnabled) {
-      await Notifications.scheduleNotificationAsync({
-        content: { title: '자세 교정 필요!', body: '자세가 흐트러졌습니다. 바른 자세로 앉아주세요.', sound: true },
-        trigger: null,
-      });
+
+    if (vibrationEnabled) {
+      try {
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      } catch (error) {
+        console.error('Haptics error:', error);
+      }
     }
-  }, [alertEnabled, vibrationEnabled, totalAlerts, saveSettings]);
+
+    if (alertEnabled) {
+      try {
+        await Notifications.scheduleNotificationAsync({
+          content: {
+            title: t.alertTitle,
+            body: t.alertBody,
+            sound: true,
+          },
+          trigger: null,
+        });
+      } catch (error) {
+        console.error('Notification error:', error);
+      }
+    }
+  }, [alertEnabled, vibrationEnabled, totalAlerts, saveSettings, t]);
 
   useEffect(() => {
     if (isMonitoring) {
-      const pulse = Animated.loop(Animated.sequence([
-        Animated.timing(pulseAnim, { toValue: 1.05, duration: 1000, useNativeDriver: true }),
-        Animated.timing(pulseAnim, { toValue: 1, duration: 1000, useNativeDriver: true }),
-      ]));
-      pulse.start();
-      return () => pulse.stop();
-    } else { pulseAnim.setValue(1); }
+      // Store animation reference for proper cleanup
+      pulseAnimationRef.current = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, { toValue: 1.05, duration: 1000, useNativeDriver: true }),
+          Animated.timing(pulseAnim, { toValue: 1, duration: 1000, useNativeDriver: true }),
+        ])
+      );
+      pulseAnimationRef.current.start();
+    } else {
+      // Stop animation and reset value
+      if (pulseAnimationRef.current) {
+        pulseAnimationRef.current.stop();
+        pulseAnimationRef.current = null;
+      }
+      pulseAnim.setValue(1);
+    }
+
+    // Cleanup on unmount
+    return () => {
+      if (pulseAnimationRef.current) {
+        pulseAnimationRef.current.stop();
+        pulseAnimationRef.current = null;
+      }
+    };
   }, [isMonitoring, pulseAnim]);
 
   useEffect(() => {
     if (isMonitoring) {
-      sessionInterval.current = setInterval(() => setSessionTime(prev => prev + 1), 1000);
+      sessionInterval.current = setInterval(() => {
+        if (!isMountedRef.current) return;
+        setSessionTime(prev => prev + 1);
+      }, CONFIG.SESSION_INTERVAL);
+
       monitoringInterval.current = setInterval(() => {
+        if (!isMountedRef.current) return;
         const status = simulatePostureCheck();
         setPostureStatus(status);
-        if (status === POSTURE_STATUS.GOOD) setGoodPostureTime(prev => prev + 3);
+
+        if (status === POSTURE_STATUS.GOOD) {
+          setGoodPostureTime(prev => prev + CONFIG.GOOD_POSTURE_INCREMENT);
+        }
+
         if (status === POSTURE_STATUS.BAD) {
-          setBadPostureCount(prev => { if (prev >= 2) { triggerBadPostureAlert(); return 0; } return prev + 1; });
-        } else { setBadPostureCount(0); }
-      }, 3000);
+          setBadPostureCount(prev => {
+            if (prev >= CONFIG.BAD_POSTURE_THRESHOLD) {
+              triggerBadPostureAlert();
+              return 0;
+            }
+            return prev + 1;
+          });
+        } else {
+          setBadPostureCount(0);
+        }
+      }, CONFIG.MONITORING_INTERVAL);
     } else {
       if (monitoringInterval.current) clearInterval(monitoringInterval.current);
       if (sessionInterval.current) clearInterval(sessionInterval.current);
     }
+
     return () => {
       if (monitoringInterval.current) clearInterval(monitoringInterval.current);
       if (sessionInterval.current) clearInterval(sessionInterval.current);
@@ -336,70 +715,152 @@ export default function App() {
   }, [isMonitoring, simulatePostureCheck, triggerBadPostureAlert]);
 
   const toggleMonitoring = useCallback(async () => {
-    if (isMonitoring) {
-      await saveSessionStats();
-      const newSessionsCount = sessionsCount + 1;
-      setSessionsCount(newSessionsCount);
-      await saveSettings('sessionsCount', newSessionsCount);
-    } else { setSessionTime(0); setBadPostureCount(0); }
-    setIsMonitoring(prev => !prev);
-    setPostureStatus(POSTURE_STATUS.GOOD);
-  }, [isMonitoring, saveSessionStats, sessionsCount, saveSettings]);
+    // Prevent rapid clicks
+    if (isProcessing) return;
+    setIsProcessing(true);
+
+    try {
+      if (isMonitoring) {
+        await saveSessionStats();
+        const newSessionsCount = sessionsCount + 1;
+        setSessionsCount(newSessionsCount);
+        await saveSettings('sessionsCount', newSessionsCount);
+      } else {
+        setSessionTime(0);
+        setBadPostureCount(0);
+      }
+      setIsMonitoring(prev => !prev);
+      setPostureStatus(POSTURE_STATUS.GOOD);
+    } finally {
+      // Delay to prevent rapid clicking
+      setTimeout(() => setIsProcessing(false), CONFIG.BUTTON_DEBOUNCE);
+    }
+  }, [isMonitoring, isProcessing, saveSessionStats, sessionsCount, saveSettings]);
 
   const formatTime = useCallback((seconds) => {
-    const hrs = Math.floor(seconds / 3600);
-    const mins = Math.floor((seconds % 3600) / 60);
-    const secs = seconds % 60;
-    if (hrs > 0) return hrs + ':' + mins.toString().padStart(2, '0') + ':' + secs.toString().padStart(2, '0');
-    return mins.toString().padStart(2, '0') + ':' + secs.toString().padStart(2, '0');
+    // Handle invalid input
+    if (typeof seconds !== 'number' || isNaN(seconds) || seconds < 0) {
+      return '00:00';
+    }
+    const safeSeconds = Math.floor(seconds);
+    const hrs = Math.floor(safeSeconds / 3600);
+    const mins = Math.floor((safeSeconds % 3600) / 60);
+    const secs = safeSeconds % 60;
+
+    if (hrs > 0) {
+      return `${hrs}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    }
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
   }, []);
 
   const statsData = useMemo(() => ({
     totalAlerts,
     totalSessionTime: formatTime(totalSessionTime + sessionTime),
-    sessionsCount: sessionsCount + '회',
-    goodPostureRate: totalSessionTime > 0 ? Math.round((goodPostureTime / (totalSessionTime + sessionTime)) * 100) + '%' : '-',
-  }), [totalAlerts, totalSessionTime, sessionTime, sessionsCount, goodPostureTime, formatTime]);
+    sessionsCount: `${sessionsCount}${lang === 'ko' ? t.times : ''}`,
+    goodPostureRate: totalSessionTime > 0
+      ? `${Math.round((goodPostureTime / (totalSessionTime + sessionTime)) * 100)}%`
+      : '-',
+  }), [totalAlerts, totalSessionTime, sessionTime, sessionsCount, goodPostureTime, formatTime, lang, t.times]);
 
   const showPrivacyPolicy = useCallback(() => {
-    Alert.alert('개인정보처리방침', '이 앱은 사용자의 개인정보를 존중합니다.\n\n• 카메라 영상은 기기에서만 처리되며 외부로 전송되지 않습니다.\n• 앱 사용 통계는 기기에만 저장됩니다.\n• 광고 표시를 위해 익명화된 광고 ID가 사용될 수 있습니다.\n\n문의: allofdaniel@gmail.com', [{ text: '확인', style: 'default' }]);
-  }, []);
+    Alert.alert(
+      t.privacyPolicy,
+      t.privacyPolicyContent,
+      [{ text: t.ok, style: 'default' }]
+    );
+  }, [t]);
 
   const getStatusColor = useCallback(() => {
-    switch (postureStatus) { case POSTURE_STATUS.BAD: return COLORS.danger; case POSTURE_STATUS.WARNING: return COLORS.warning; default: return COLORS.success; }
+    switch (postureStatus) {
+      case POSTURE_STATUS.BAD: return COLORS.danger;
+      case POSTURE_STATUS.WARNING: return COLORS.warning;
+      default: return COLORS.success;
+    }
   }, [postureStatus]);
 
   const getStatusText = useCallback(() => {
-    switch (postureStatus) { case POSTURE_STATUS.BAD: return '자세 교정 필요!'; case POSTURE_STATUS.WARNING: return '주의'; default: return '좋은 자세'; }
-  }, [postureStatus]);
+    switch (postureStatus) {
+      case POSTURE_STATUS.BAD: return t.needCorrection;
+      case POSTURE_STATUS.WARNING: return t.warning;
+      default: return t.goodPosture;
+    }
+  }, [postureStatus, t]);
 
   const getStatusEmoji = useCallback(() => {
-    switch (postureStatus) { case POSTURE_STATUS.BAD: return '😣'; case POSTURE_STATUS.WARNING: return '😐'; default: return '😊'; }
+    switch (postureStatus) {
+      case POSTURE_STATUS.BAD: return '😣';
+      case POSTURE_STATUS.WARNING: return '😐';
+      default: return '😊';
+    }
   }, [postureStatus]);
 
-  if (!isOnboardingChecked) return (<SafeAreaView style={styles.container}><StatusBar style="light" /><View style={styles.centerContent}><Text style={styles.loadingText}>로딩 중...</Text></View></SafeAreaView>);
-  if (showOnboarding) return <OnboardingScreen onComplete={completeOnboarding} />;
-  if (!permission) return (<SafeAreaView style={styles.container}><StatusBar style="light" /><View style={styles.centerContent}><Text style={styles.loadingText}>권한 확인 중...</Text></View></SafeAreaView>);
-  if (!permission.granted) return <PermissionScreen onRequestPermission={requestPermission} />;
+  // Loading states
+  if (!isOnboardingChecked) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <StatusBar style="light" />
+        <View style={styles.centerContent}>
+          <ActivityIndicator size="large" color={COLORS.primary} />
+          <Text style={styles.loadingText}>{t.loading}</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (showOnboarding) {
+    return <OnboardingScreen onComplete={completeOnboarding} t={t} />;
+  }
+
+  if (!permission) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <StatusBar style="light" />
+        <View style={styles.centerContent}>
+          <ActivityIndicator size="large" color={COLORS.primary} />
+          <Text style={styles.loadingText}>{t.checkingPermission}</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (!permission.granted) {
+    // Check if permission was explicitly denied (canAskAgain will be false)
+    const isDenied = permission.status === 'denied' && !permission.canAskAgain;
+    return <PermissionScreen onRequestPermission={requestPermission} isDenied={isDenied} t={t} />;
+  }
 
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar style="light" />
+
+      {/* Header */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
-          <Text style={styles.headerTitle}>자세 교정 알리미</Text>
-          <Text style={styles.headerSubtitle}>바른 자세로 건강하게</Text>
+          <Text style={styles.headerTitle} accessibilityRole="header">{t.appName}</Text>
+          <Text style={styles.headerSubtitle}>{t.appSubtitle}</Text>
         </View>
         <View style={styles.headerRight}>
-          <TouchableOpacity style={styles.headerButton} onPress={() => setShowStats(true)}>
+          <TouchableOpacity
+            style={styles.headerButton}
+            onPress={() => setShowStats(true)}
+            accessibilityRole="button"
+            accessibilityLabel={t.statistics}
+          >
             <Text style={styles.headerButtonIcon}>📊</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.headerButton} onPress={() => setShowSettings(true)}>
+          <TouchableOpacity
+            style={styles.headerButton}
+            onPress={() => setShowSettings(true)}
+            accessibilityRole="button"
+            accessibilityLabel={t.settings}
+          >
             <Text style={styles.headerButtonIcon}>⚙️</Text>
           </TouchableOpacity>
         </View>
       </View>
-      <Animated.View style={[styles.cameraContainer, { transform: [{ scale: pulseAnim }] }]}>
+
+      {/* Camera View */}
+      <Animated.View style={[styles.cameraContainer, { height: height * 0.35, transform: [{ scale: pulseAnim }] }]}>
         <CameraView ref={cameraRef} style={styles.camera} facing="front">
           {isMonitoring && (
             <View style={[styles.statusOverlay, { borderColor: getStatusColor() }]}>
@@ -408,7 +869,7 @@ export default function App() {
                 <Text style={styles.statusText}>{getStatusText()}</Text>
               </View>
               <View style={styles.sessionInfo}>
-                <Text style={styles.sessionTimeLabel}>세션 시간</Text>
+                <Text style={styles.sessionTimeLabel}>{t.sessionTime}</Text>
                 <Text style={styles.sessionTime}>{formatTime(sessionTime)}</Text>
               </View>
             </View>
@@ -416,52 +877,103 @@ export default function App() {
           {!isMonitoring && (
             <View style={styles.guideOverlay}>
               <Text style={styles.guideEmoji}>🧘</Text>
-              <Text style={styles.guideText}>시작 버튼을 눌러{'\n'}자세 모니터링을 시작하세요</Text>
-              <Text style={styles.guideHint}>상체가 잘 보이도록 폰을 세워두세요</Text>
+              <Text style={styles.guideText}>{t.guideText}</Text>
+              <Text style={styles.guideHint}>{t.guideHint}</Text>
             </View>
           )}
         </CameraView>
       </Animated.View>
-      <View style={styles.quickStats}>
-        <View style={styles.quickStatItem}>
-          <Text style={styles.quickStatIcon}>🔔</Text>
-          <Text style={styles.quickStatValue}>{totalAlerts}</Text>
-          <Text style={styles.quickStatLabel}>알림</Text>
+
+      {/* Quick Stats */}
+      <View style={styles.quickStats} accessibilityRole="summary">
+        <View style={styles.quickStatItem} accessibilityLabel={`${t.alerts}: ${totalAlerts}`}>
+          <Text style={styles.quickStatIcon} accessibilityElementsHidden>🔔</Text>
+          <Text style={styles.quickStatValue} accessibilityElementsHidden>{totalAlerts}</Text>
+          <Text style={styles.quickStatLabel} accessibilityElementsHidden>{t.alerts}</Text>
         </View>
         <View style={styles.quickStatDivider} />
-        <View style={styles.quickStatItem}>
-          <Text style={styles.quickStatIcon}>⏱️</Text>
-          <Text style={styles.quickStatValue}>{formatTime(sessionTime)}</Text>
-          <Text style={styles.quickStatLabel}>현재 세션</Text>
+        <View style={styles.quickStatItem} accessibilityLabel={`${t.currentSession}: ${formatTime(sessionTime)}`}>
+          <Text style={styles.quickStatIcon} accessibilityElementsHidden>⏱️</Text>
+          <Text style={styles.quickStatValue} accessibilityElementsHidden>{formatTime(sessionTime)}</Text>
+          <Text style={styles.quickStatLabel} accessibilityElementsHidden>{t.currentSession}</Text>
         </View>
         <View style={styles.quickStatDivider} />
-        <View style={styles.quickStatItem}>
-          <Text style={styles.quickStatIcon}>📊</Text>
-          <Text style={styles.quickStatValue}>{sessionsCount}</Text>
-          <Text style={styles.quickStatLabel}>총 세션</Text>
+        <View style={styles.quickStatItem} accessibilityLabel={`${t.totalSessions}: ${sessionsCount}`}>
+          <Text style={styles.quickStatIcon} accessibilityElementsHidden>📊</Text>
+          <Text style={styles.quickStatValue} accessibilityElementsHidden>{sessionsCount}</Text>
+          <Text style={styles.quickStatLabel} accessibilityElementsHidden>{t.totalSessions}</Text>
         </View>
       </View>
+
+      {/* Control Section */}
       <View style={styles.controlSection}>
-        <TouchableOpacity style={[styles.mainButton, { backgroundColor: isMonitoring ? COLORS.danger : COLORS.primary }]} onPress={toggleMonitoring} activeOpacity={0.8}>
+        <TouchableOpacity
+          style={[
+            styles.mainButton,
+            { backgroundColor: isMonitoring ? COLORS.danger : COLORS.primary },
+            isProcessing && { opacity: 0.6 }
+          ]}
+          onPress={toggleMonitoring}
+          activeOpacity={0.8}
+          disabled={isProcessing}
+          accessibilityRole="button"
+          accessibilityLabel={isMonitoring ? t.stopMonitoring : t.startMonitoring}
+          accessibilityState={{ checked: isMonitoring, disabled: isProcessing }}
+        >
           <Text style={styles.mainButtonEmoji}>{isMonitoring ? '⏹️' : '▶️'}</Text>
-          <Text style={styles.mainButtonText}>{isMonitoring ? '모니터링 중지' : '모니터링 시작'}</Text>
+          <Text style={styles.mainButtonText}>
+            {isMonitoring ? t.stopMonitoring : t.startMonitoring}
+          </Text>
         </TouchableOpacity>
+
         <View style={styles.quickSettings}>
-          <Text style={styles.quickSettingsLabel}>민감도</Text>
-          <View style={styles.quickSettingsButtons}>
-            {[{ value: 0.1, label: '낮음' }, { value: 0.3, label: '중간' }, { value: 0.5, label: '높음' }].map((item) => (
-              <TouchableOpacity key={item.value} style={[styles.quickSettingsButton, sensitivity === item.value && styles.quickSettingsButtonActive]} onPress={() => { setSensitivity(item.value); saveSettings('sensitivity', item.value); }}>
-                <Text style={[styles.quickSettingsButtonText, sensitivity === item.value && styles.quickSettingsButtonTextActive]}>{item.label}</Text>
+          <Text style={styles.quickSettingsLabel} accessibilityRole="header">{t.sensitivity}</Text>
+          <View style={styles.quickSettingsButtons} accessibilityRole="radiogroup">
+            {[
+              { value: 0.1, label: t.low },
+              { value: 0.3, label: t.medium },
+              { value: 0.5, label: t.high }
+            ].map((item) => (
+              <TouchableOpacity
+                key={item.value}
+                style={[styles.quickSettingsButton, sensitivity === item.value && styles.quickSettingsButtonActive]}
+                onPress={() => { setSensitivity(item.value); saveSettings('sensitivity', item.value); }}
+                accessibilityRole="radio"
+                accessibilityLabel={`${t.sensitivity}: ${item.label}`}
+                accessibilityState={{ selected: sensitivity === item.value }}
+              >
+                <Text style={[styles.quickSettingsButtonText, sensitivity === item.value && styles.quickSettingsButtonTextActive]}>
+                  {item.label}
+                </Text>
               </TouchableOpacity>
             ))}
           </View>
         </View>
       </View>
-      <View style={styles.adContainer}>
-        <BannerAd unitId={BANNER_AD_UNIT_ID} size={BannerAdSize.ANCHORED_ADAPTIVE_BANNER} requestOptions={{ requestNonPersonalizedAdsOnly: true }} />
-      </View>
-      <SettingsModal visible={showSettings} onClose={() => setShowSettings(false)} sensitivity={sensitivity} setSensitivity={setSensitivity} vibrationEnabled={vibrationEnabled} setVibrationEnabled={setVibrationEnabled} alertEnabled={alertEnabled} setAlertEnabled={setAlertEnabled} saveSettings={saveSettings} onShowPrivacyPolicy={showPrivacyPolicy} />
-      <StatsModal visible={showStats} onClose={() => setShowStats(false)} stats={statsData} />
+
+      {/* Ad Banner */}
+      <AdBanner />
+
+      {/* Modals */}
+      <SettingsModal
+        visible={showSettings}
+        onClose={() => setShowSettings(false)}
+        sensitivity={sensitivity}
+        setSensitivity={setSensitivity}
+        vibrationEnabled={vibrationEnabled}
+        setVibrationEnabled={setVibrationEnabled}
+        alertEnabled={alertEnabled}
+        setAlertEnabled={setAlertEnabled}
+        saveSettings={saveSettings}
+        onShowPrivacyPolicy={showPrivacyPolicy}
+        t={t}
+      />
+      <StatsModal
+        visible={showStats}
+        onClose={() => setShowStats(false)}
+        stats={statsData}
+        t={t}
+      />
     </SafeAreaView>
   );
 }
@@ -496,21 +1008,21 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: 20, fontWeight: 'bold', color: COLORS.text },
   headerSubtitle: { fontSize: 12, color: COLORS.textMuted, marginTop: 2 },
   headerRight: { flexDirection: 'row', gap: 8 },
-  headerButton: { width: 40, height: 40, borderRadius: 12, backgroundColor: COLORS.surface, justifyContent: 'center', alignItems: 'center' },
+  headerButton: { width: 44, height: 44, borderRadius: 12, backgroundColor: COLORS.surface, justifyContent: 'center', alignItems: 'center' },
   headerButtonIcon: { fontSize: 18 },
-  cameraContainer: { height: height * 0.35, marginHorizontal: 16, borderRadius: 24, overflow: 'hidden', backgroundColor: '#000' },
+  cameraContainer: { marginHorizontal: 16, borderRadius: 24, overflow: 'hidden', backgroundColor: '#000' },
   camera: { flex: 1 },
   statusOverlay: { flex: 1, borderWidth: 4, borderRadius: 20, justifyContent: 'space-between', alignItems: 'center', padding: 16 },
   statusBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 24 },
   statusEmoji: { fontSize: 24, marginRight: 8 },
   statusText: { fontSize: 16, fontWeight: 'bold', color: COLORS.text },
-  sessionInfo: { backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 12, alignItems: 'center' },
+  sessionInfo: { backgroundColor: COLORS.overlay, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 12, alignItems: 'center' },
   sessionTimeLabel: { fontSize: 10, color: COLORS.textSecondary, marginBottom: 2 },
   sessionTime: { fontSize: 20, color: COLORS.text, fontWeight: 'bold' },
-  guideOverlay: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.7)' },
+  guideOverlay: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: COLORS.overlayStrong },
   guideEmoji: { fontSize: 56, marginBottom: 16 },
   guideText: { fontSize: 18, color: COLORS.text, textAlign: 'center', lineHeight: 26, fontWeight: '500' },
-  guideHint: { fontSize: 13, color: COLORS.textMuted, marginTop: 12 },
+  guideHint: { fontSize: 13, color: COLORS.textMuted, marginTop: 12, textAlign: 'center' },
   quickStats: { flexDirection: 'row', marginHorizontal: 16, marginTop: 16, backgroundColor: COLORS.surface, borderRadius: 16, padding: 16 },
   quickStatItem: { flex: 1, alignItems: 'center' },
   quickStatIcon: { fontSize: 20, marginBottom: 4 },
@@ -529,11 +1041,11 @@ const styles = StyleSheet.create({
   quickSettingsButtonText: { fontSize: 14, color: COLORS.textSecondary, fontWeight: '500' },
   quickSettingsButtonTextActive: { color: COLORS.text, fontWeight: 'bold' },
   adContainer: { alignItems: 'center', backgroundColor: COLORS.background, paddingBottom: Platform.OS === 'ios' ? 0 : 8 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },
+  modalOverlay: { flex: 1, backgroundColor: COLORS.overlayStrong, justifyContent: 'flex-end' },
   modalContent: { backgroundColor: COLORS.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '80%' },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderBottomWidth: 1, borderBottomColor: COLORS.border },
   modalTitle: { fontSize: 20, fontWeight: 'bold', color: COLORS.text },
-  modalCloseButton: { width: 32, height: 32, borderRadius: 16, backgroundColor: COLORS.surfaceLight, justifyContent: 'center', alignItems: 'center' },
+  modalCloseButton: { width: 48, height: 48, borderRadius: 24, backgroundColor: COLORS.surfaceLight, justifyContent: 'center', alignItems: 'center' },
   modalCloseText: { fontSize: 16, color: COLORS.textSecondary },
   modalBody: { padding: 20 },
   settingsSection: { marginBottom: 24 },

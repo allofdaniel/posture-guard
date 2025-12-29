@@ -39,3 +39,15 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Credentials and secrets - NEVER commit these!
+google-service-account.json
+credentials.json
+*.keystore
+service-account*.json
+*-service-account.json
+
+# Environment files
+.env
+.env.*
+!.env.example
