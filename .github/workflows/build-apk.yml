@@ -80,9 +80,14 @@ jobs:
 
       - name: Build Release APK (Windows)
         if: runner.os == 'Windows'
-        shell: cmd
+        shell: bash
         run: |
-          cd android && .\gradlew.bat assembleRelease -Pandroid.injected.signing.store.file=%CD%\app\posture-guard.keystore -Pandroid.injected.signing.store.password=${{ secrets.KEYSTORE_PASSWORD }} -Pandroid.injected.signing.key.alias=${{ secrets.KEY_ALIAS }} -Pandroid.injected.signing.key.password=${{ secrets.KEY_PASSWORD }} --build-cache --parallel --daemon
+          cd android && ./gradlew.bat assembleRelease \
+            -Pandroid.injected.signing.store.file=$PWD/app/posture-guard.keystore \
+            -Pandroid.injected.signing.store.password=${{ secrets.KEYSTORE_PASSWORD }} \
+            -Pandroid.injected.signing.key.alias=${{ secrets.KEY_ALIAS }} \
+            -Pandroid.injected.signing.key.password=${{ secrets.KEY_PASSWORD }} \
+            --build-cache --parallel --daemon
 
       - name: Build Release APK (Linux/Mac)
         if: runner.os != 'Windows'
