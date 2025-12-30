@@ -17,7 +17,9 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { CameraView, useCameraPermissions } from 'expo-camera';
+import { useCameraPermissions } from 'expo-camera';
+import { WebView } from 'react-native-webview';
+import { POSE_DETECTION_HTML } from './PoseDetectionWebView';
 import * as Haptics from 'expo-haptics';
 import * as Notifications from 'expo-notifications';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -452,9 +454,11 @@ export default function App() {
   const [showStats, setShowStats] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
 
-  const cameraRef = useRef(null);
+  const webViewRef = useRef(null);
   const monitoringInterval = useRef(null);
   const sessionInterval = useRef(null);
+  const [webViewReady, setWebViewReady] = useState(false);
+  const [currentPostureIssues, setCurrentPostureIssues] = useState([]);
   const appState = useRef(AppState.currentState);
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const pulseAnimationRef = useRef(null);
@@ -608,16 +612,6 @@ export default function App() {
     return () => subscription.remove();
   }, [isMonitoring, saveSessionStats]);
 
-  const simulatePostureCheck = useCallback(() => {
-    const random = Math.random();
-    const badThreshold = CONFIG.POSTURE_THRESHOLD.BAD_BASE + (sensitivity * CONFIG.POSTURE_THRESHOLD.BAD_MULTIPLIER);
-    const warningThreshold = CONFIG.POSTURE_THRESHOLD.WARNING_BASE + (sensitivity * CONFIG.POSTURE_THRESHOLD.WARNING_MULTIPLIER);
-
-    if (random < badThreshold) return POSTURE_STATUS.BAD;
-    if (random < warningThreshold) return POSTURE_STATUS.WARNING;
-    return POSTURE_STATUS.GOOD;
-  }, [sensitivity]);
-
   const triggerBadPostureAlert = useCallback(async () => {
     const newTotalAlerts = totalAlerts + 1;
     setTotalAlerts(newTotalAlerts);
@@ -647,6 +641,56 @@ export default function App() {
     }
   }, [alertEnabled, vibrationEnabled, totalAlerts, saveSettings, t]);
 
+  // Handle messages from WebView (pose detection results)
+  const handleWebViewMessage = useCallback((event) => {
+    try {
+      const data = JSON.parse(event.nativeEvent.data);
+
+      if (data.type === 'ready') {
+        setWebViewReady(true);
+      } else if (data.type === 'posture') {
+        // Convert status string to POSTURE_STATUS
+        let status = POSTURE_STATUS.GOOD;
+        if (data.status === 'bad') status = POSTURE_STATUS.BAD;
+        else if (data.status === 'warning') status = POSTURE_STATUS.WARNING;
+
+        setPostureStatus(status);
+        setCurrentPostureIssues(data.issues || []);
+
+        // Handle good/bad posture logic
+        if (status === POSTURE_STATUS.GOOD) {
+          setGoodPostureTime(prev => prev + 1);
+        }
+
+        if (status === POSTURE_STATUS.BAD) {
+          setBadPostureCount(prev => {
+            if (prev >= CONFIG.BAD_POSTURE_THRESHOLD) {
+              triggerBadPostureAlert();
+              return 0;
+            }
+            return prev + 1;
+          });
+        } else {
+          setBadPostureCount(0);
+        }
+      } else if (data.type === 'calibrated') {
+        // Pose calibrated - monitoring is now active
+        console.log('Pose calibrated');
+      } else if (data.type === 'error') {
+        console.error('WebView error:', data.message);
+      }
+    } catch (e) {
+      console.error('WebView message parse error:', e);
+    }
+  }, [triggerBadPostureAlert]);
+
+  // Send message to WebView
+  const sendToWebView = useCallback((message) => {
+    if (webViewRef.current) {
+      webViewRef.current.postMessage(JSON.stringify(message));
+    }
+  }, []);
+
   useEffect(() => {
     if (isMonitoring) {
       // Store animation reference for proper cleanup
@@ -675,44 +719,31 @@ export default function App() {
     };
   }, [isMonitoring, pulseAnim]);
 
+  // Send start/stop monitoring to WebView when monitoring state changes
   useEffect(() => {
     if (isMonitoring) {
+      // Start session timer
       sessionInterval.current = setInterval(() => {
         if (!isMountedRef.current) return;
         setSessionTime(prev => prev + 1);
       }, CONFIG.SESSION_INTERVAL);
 
-      monitoringInterval.current = setInterval(() => {
-        if (!isMountedRef.current) return;
-        const status = simulatePostureCheck();
-        setPostureStatus(status);
-
-        if (status === POSTURE_STATUS.GOOD) {
-          setGoodPostureTime(prev => prev + CONFIG.GOOD_POSTURE_INCREMENT);
-        }
-
-        if (status === POSTURE_STATUS.BAD) {
-          setBadPostureCount(prev => {
-            if (prev >= CONFIG.BAD_POSTURE_THRESHOLD) {
-              triggerBadPostureAlert();
-              return 0;
-            }
-            return prev + 1;
-          });
-        } else {
-          setBadPostureCount(0);
-        }
-      }, CONFIG.MONITORING_INTERVAL);
+      // Tell WebView to start monitoring with current sensitivity
+      // Map sensitivity to detection sensitivity (higher app sensitivity = lower threshold = more sensitive)
+      const detectionSensitivity = sensitivity <= 0.1 ? 1.5 : sensitivity <= 0.3 ? 1.0 : 0.7;
+      sendToWebView({ type: 'startMonitoring', sensitivity: detectionSensitivity });
     } else {
-      if (monitoringInterval.current) clearInterval(monitoringInterval.current);
+      // Stop session timer
       if (sessionInterval.current) clearInterval(sessionInterval.current);
+
+      // Tell WebView to stop monitoring
+      sendToWebView({ type: 'stopMonitoring' });
     }
 
     return () => {
-      if (monitoringInterval.current) clearInterval(monitoringInterval.current);
       if (sessionInterval.current) clearInterval(sessionInterval.current);
     };
-  }, [isMonitoring, simulatePostureCheck, triggerBadPostureAlert]);
+  }, [isMonitoring, sensitivity, sendToWebView]);
 
   const toggleMonitoring = useCallback(async () => {
     // Prevent rapid clicks
@@ -859,29 +890,43 @@ export default function App() {
         </View>
       </View>
 
-      {/* Camera View */}
-      <Animated.View style={[styles.cameraContainer, { height: height * 0.35, transform: [{ scale: pulseAnim }] }]}>
-        <CameraView ref={cameraRef} style={styles.camera} facing="front">
-          {isMonitoring && (
-            <View style={[styles.statusOverlay, { borderColor: getStatusColor() }]}>
-              <View style={[styles.statusBadge, { backgroundColor: getStatusColor() }]}>
-                <Text style={styles.statusEmoji}>{getStatusEmoji()}</Text>
-                <Text style={styles.statusText}>{getStatusText()}</Text>
-              </View>
-              <View style={styles.sessionInfo}>
-                <Text style={styles.sessionTimeLabel}>{t.sessionTime}</Text>
-                <Text style={styles.sessionTime}>{formatTime(sessionTime)}</Text>
-              </View>
+      {/* Camera View with AI Pose Detection */}
+      <Animated.View style={[styles.cameraContainer, { height: height * 0.45, transform: [{ scale: pulseAnim }] }]}>
+        <WebView
+          ref={webViewRef}
+          source={{ html: POSE_DETECTION_HTML }}
+          style={styles.camera}
+          onMessage={handleWebViewMessage}
+          javaScriptEnabled={true}
+          domStorageEnabled={true}
+          mediaPlaybackRequiresUserAction={false}
+          allowsInlineMediaPlayback={true}
+          originWhitelist={['*']}
+          mixedContentMode="always"
+          allowFileAccess={true}
+          allowUniversalAccessFromFileURLs={true}
+          scalesPageToFit={true}
+        />
+        {/* Overlay for session info - shown on top of WebView */}
+        {isMonitoring && (
+          <View style={styles.webViewOverlay}>
+            <View style={styles.sessionInfo}>
+              <Text style={styles.sessionTimeLabel}>{t.sessionTime}</Text>
+              <Text style={styles.sessionTime}>{formatTime(sessionTime)}</Text>
             </View>
-          )}
-          {!isMonitoring && (
-            <View style={styles.guideOverlay}>
-              <Text style={styles.guideEmoji}>🧘</Text>
-              <Text style={styles.guideText}>{t.guideText}</Text>
-              <Text style={styles.guideHint}>{t.guideHint}</Text>
-            </View>
-          )}
-        </CameraView>
+            {currentPostureIssues.length > 0 && (
+              <View style={styles.issuesContainer}>
+                <Text style={styles.issuesText}>{currentPostureIssues.join(', ')}</Text>
+              </View>
+            )}
+          </View>
+        )}
+        {!webViewReady && (
+          <View style={styles.loadingOverlay}>
+            <ActivityIndicator size="large" color="#6366F1" />
+            <Text style={styles.loadingText}>{t.loading}</Text>
+          </View>
+        )}
       </Animated.View>
 
       {/* Quick Stats */}
@@ -1076,4 +1121,8 @@ const styles = StyleSheet.create({
   statLabel: { fontSize: 12, color: COLORS.textMuted },
   statsNote: { marginTop: 20, padding: 16, backgroundColor: COLORS.surfaceLight, borderRadius: 12, alignItems: 'center' },
   statsNoteText: { fontSize: 14, color: COLORS.textSecondary, textAlign: 'center' },
+  webViewOverlay: { position: 'absolute', bottom: 0, left: 0, right: 0, padding: 12, alignItems: 'center' },
+  issuesContainer: { backgroundColor: COLORS.overlay, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 10, marginTop: 8 },
+  issuesText: { fontSize: 12, color: COLORS.text, fontWeight: '500' },
+  loadingOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: COLORS.overlayStrong, justifyContent: 'center', alignItems: 'center' },
 });

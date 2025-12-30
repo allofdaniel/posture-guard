@@ -51,3 +51,10 @@ service-account*.json
 .env
 .env.*
 !.env.example
+
+# Build outputs
+*.apk
+*.aab
+
+# Temp files
+keystore_b64.txt
