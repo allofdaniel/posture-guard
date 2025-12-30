@@ -15,10 +15,6 @@ jobs:
   build:
     runs-on: self-hosted
 
-    env:
-      ANDROID_HOME: ${{ runner.os == 'Windows' && 'C:\Users\allof\AppData\Local\Android\Sdk' || '/opt/android-sdk' }}
-      JAVA_HOME: ${{ runner.os == 'Windows' && 'C:\Program Files\Microsoft\jdk-17.0.14.7-hotspot' || '/usr/lib/jvm/java-17' }}
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -54,14 +50,15 @@ jobs:
       - name: Run Expo prebuild
         run: npx expo prebuild --platform android --clean
 
-      - name: Create local.properties
-        shell: bash
+      - name: Create local.properties (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            echo "sdk.dir=C:\\\\Users\\\\allof\\\\AppData\\\\Local\\\\Android\\\\Sdk" > android/local.properties
-          else
-            echo "sdk.dir=$ANDROID_HOME" > android/local.properties
-          fi
+          "sdk.dir=C:\\Users\\allof\\AppData\\Local\\Android\\Sdk" | Out-File -FilePath android/local.properties -Encoding ASCII
+
+      - name: Create local.properties (Linux)
+        if: runner.os != 'Windows'
+        run: echo "sdk.dir=$ANDROID_HOME" > android/local.properties
 
       - name: Fix string resources
         shell: bash
@@ -86,14 +83,7 @@ jobs:
         shell: cmd
         run: |
           cd android
-          gradlew.bat assembleRelease ^
-            -Pandroid.injected.signing.store.file=%CD%\app\posture-guard.keystore ^
-            -Pandroid.injected.signing.store.password=${{ secrets.KEYSTORE_PASSWORD }} ^
-            -Pandroid.injected.signing.key.alias=${{ secrets.KEY_ALIAS }} ^
-            -Pandroid.injected.signing.key.password=${{ secrets.KEY_PASSWORD }} ^
-            --build-cache ^
-            --parallel ^
-            --daemon
+          gradlew.bat assembleRelease -Pandroid.injected.signing.store.file=%CD%\app\posture-guard.keystore -Pandroid.injected.signing.store.password=${{ secrets.KEYSTORE_PASSWORD }} -Pandroid.injected.signing.key.alias=${{ secrets.KEY_ALIAS }} -Pandroid.injected.signing.key.password=${{ secrets.KEY_PASSWORD }} --build-cache --parallel --daemon
 
       - name: Build Release APK (Linux/Mac)
         if: runner.os != 'Windows'
