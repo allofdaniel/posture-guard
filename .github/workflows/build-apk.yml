@@ -6,13 +6,18 @@ on:
     paths-ignore:
       - '**.md'
       - '.gitignore'
+      - 'runner-setup/**'
   pull_request:
     branches: [main, master]
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
+
+    env:
+      ANDROID_HOME: ${{ runner.os == 'Windows' && 'C:\Users\allof\AppData\Local\Android\Sdk' || '/opt/android-sdk' }}
+      JAVA_HOME: ${{ runner.os == 'Windows' && 'C:\Program Files\Microsoft\jdk-17.0.14.7-hotspot' || '/usr/lib/jvm/java-17' }}
 
     steps:
       - name: Checkout code
@@ -24,34 +29,43 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
-      - name: Setup Expo CLI
-        uses: expo/expo-github-action@v8
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
         with:
-          expo-version: latest
-          eas-version: latest
-          token: ${{ secrets.EXPO_TOKEN }}
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            android/.gradle
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Cache node modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
 
       - name: Install dependencies
         run: npm ci
-
-      - name: Setup JDK
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
 
       - name: Run Expo prebuild
         run: npx expo prebuild --platform android --clean
 
       - name: Create local.properties
-        run: echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            echo "sdk.dir=C:\\\\Users\\\\allof\\\\AppData\\\\Local\\\\Android\\\\Sdk" > android/local.properties
+          else
+            echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+          fi
 
       - name: Fix string resources
+        shell: bash
         run: |
-          # Add missing strings to default locale
           cat > android/app/src/main/res/values/strings.xml << 'EOF'
           <resources>
             <string name="app_name">Posture Guard</string>
@@ -62,11 +76,28 @@ jobs:
           </resources>
           EOF
 
-      - name: Decode keystore
+      - name: Setup keystore
+        shell: bash
         run: |
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/posture-guard.keystore
 
-      - name: Build Release APK
+      - name: Build Release APK (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          cd android
+          gradlew.bat assembleRelease ^
+            -Pandroid.injected.signing.store.file=%CD%\app\posture-guard.keystore ^
+            -Pandroid.injected.signing.store.password=${{ secrets.KEYSTORE_PASSWORD }} ^
+            -Pandroid.injected.signing.key.alias=${{ secrets.KEY_ALIAS }} ^
+            -Pandroid.injected.signing.key.password=${{ secrets.KEY_PASSWORD }} ^
+            --build-cache ^
+            --parallel ^
+            --daemon
+
+      - name: Build Release APK (Linux/Mac)
+        if: runner.os != 'Windows'
+        shell: bash
         run: |
           cd android
           chmod +x gradlew
@@ -74,31 +105,37 @@ jobs:
             -Pandroid.injected.signing.store.file=$PWD/app/posture-guard.keystore \
             -Pandroid.injected.signing.store.password=${{ secrets.KEYSTORE_PASSWORD }} \
             -Pandroid.injected.signing.key.alias=${{ secrets.KEY_ALIAS }} \
-            -Pandroid.injected.signing.key.password=${{ secrets.KEY_PASSWORD }}
+            -Pandroid.injected.signing.key.password=${{ secrets.KEY_PASSWORD }} \
+            --build-cache \
+            --parallel \
+            --daemon
 
       - name: Get version info
         id: version
+        shell: bash
         run: |
           VERSION=$(node -p "require('./package.json').version")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Rename APK
+      - name: Rename and copy APK
+        shell: bash
         run: |
-          mv android/app/build/outputs/apk/release/app-release.apk \
-             android/app/build/outputs/apk/release/posture-guard-v${{ steps.version.outputs.version }}.apk
+          mkdir -p output
+          cp android/app/build/outputs/apk/release/app-release.apk \
+             output/posture-guard-v${{ steps.version.outputs.version }}.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: posture-guard-apk
-          path: android/app/build/outputs/apk/release/posture-guard-v${{ steps.version.outputs.version }}.apk
+          path: output/posture-guard-v${{ steps.version.outputs.version }}.apk
           retention-days: 30
 
       - name: Create Release (on tag push)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v1
         with:
-          files: android/app/build/outputs/apk/release/posture-guard-v${{ steps.version.outputs.version }}.apk
+          files: output/posture-guard-v${{ steps.version.outputs.version }}.apk
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
