@@ -906,6 +906,11 @@ export default function App() {
           allowFileAccess={true}
           allowUniversalAccessFromFileURLs={true}
           scalesPageToFit={true}
+          mediaCapturePermissionGrantType="grant"
+          androidLayerType="hardware"
+          onPermissionRequest={(event) => {
+            event.nativeEvent.grant && event.nativeEvent.grant();
+          }}
         />
         {/* Overlay for session info - shown on top of WebView */}
         {isMonitoring && (
