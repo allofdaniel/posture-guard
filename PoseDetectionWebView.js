@@ -102,8 +102,7 @@ export const POSE_DETECTION_HTML = `
     </div>
   </div>
 
-  <!-- Load legacy MediaPipe libraries (works in Android WebView) -->
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <!-- Load MediaPipe Pose library (works in Android WebView) -->
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
 
   <script>
@@ -274,26 +273,161 @@ export const POSE_DETECTION_HTML = `
         return { status, issues };
       }
 
+      // Connection pairs for drawing skeleton
+      const POSE_CONNECTIONS = [
+        // Torso
+        [LANDMARKS.LEFT_SHOULDER, LANDMARKS.RIGHT_SHOULDER],
+        [LANDMARKS.LEFT_SHOULDER, LANDMARKS.LEFT_HIP],
+        [LANDMARKS.RIGHT_SHOULDER, LANDMARKS.RIGHT_HIP],
+        [LANDMARKS.LEFT_HIP, LANDMARKS.RIGHT_HIP],
+        // Left arm
+        [LANDMARKS.LEFT_SHOULDER, LANDMARKS.LEFT_ELBOW],
+        [LANDMARKS.LEFT_ELBOW, LANDMARKS.LEFT_WRIST],
+        // Right arm
+        [LANDMARKS.RIGHT_SHOULDER, LANDMARKS.RIGHT_ELBOW],
+        [LANDMARKS.RIGHT_ELBOW, LANDMARKS.RIGHT_WRIST],
+        // Face
+        [LANDMARKS.NOSE, LANDMARKS.LEFT_EYE],
+        [LANDMARKS.NOSE, LANDMARKS.RIGHT_EYE],
+        [LANDMARKS.LEFT_EYE, LANDMARKS.LEFT_EAR],
+        [LANDMARKS.RIGHT_EYE, LANDMARKS.RIGHT_EAR],
+      ];
+
       function drawPose(landmarks) {
         ctx.save();
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.translate(canvas.width, 0);
         ctx.scale(-1, 1);
 
-        // Draw connections
-        if (typeof drawConnectors === 'function') {
-          drawConnectors(ctx, landmarks, POSE_CONNECTIONS, {
-            color: 'rgba(99, 102, 241, 0.6)',
-            lineWidth: 2
-          });
+        const color = 'rgba(99, 102, 241, 0.9)';
+        const fillColor = 'rgba(99, 102, 241, 0.3)';
+
+        // Get key landmarks
+        const leftShoulder = landmarks[LANDMARKS.LEFT_SHOULDER];
+        const rightShoulder = landmarks[LANDMARKS.RIGHT_SHOULDER];
+        const nose = landmarks[LANDMARKS.NOSE];
+        const leftEye = landmarks[LANDMARKS.LEFT_EYE];
+        const rightEye = landmarks[LANDMARKS.RIGHT_EYE];
+
+        // Calculate positions
+        const toPixel = (lm) => ({
+          x: lm.x * canvas.width,
+          y: lm.y * canvas.height
+        });
+
+        // Draw head (circle)
+        if (isValid(nose)) {
+          const nosePos = toPixel(nose);
+          const headRadius = canvas.width * 0.08;
+
+          // Head circle
+          ctx.beginPath();
+          ctx.arc(nosePos.x, nosePos.y - headRadius * 0.3, headRadius, 0, 2 * Math.PI);
+          ctx.fillStyle = fillColor;
+          ctx.fill();
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 3;
+          ctx.stroke();
         }
 
-        // Draw landmarks
-        if (typeof drawLandmarks === 'function') {
-          drawLandmarks(ctx, landmarks, {
-            color: 'rgba(99, 102, 241, 0.8)',
-            radius: 4
-          });
+        // Draw body silhouette
+        if (isValid(leftShoulder) && isValid(rightShoulder)) {
+          const ls = toPixel(leftShoulder);
+          const rs = toPixel(rightShoulder);
+          const shoulderCenterY = (ls.y + rs.y) / 2;
+          const shoulderWidth = Math.abs(ls.x - rs.x);
+
+          // Neck line (nose to shoulder center)
+          if (isValid(nose)) {
+            const nosePos = toPixel(nose);
+            ctx.beginPath();
+            ctx.moveTo(nosePos.x, nosePos.y + canvas.width * 0.05);
+            ctx.lineTo((ls.x + rs.x) / 2, shoulderCenterY);
+            ctx.strokeStyle = color;
+            ctx.lineWidth = shoulderWidth * 0.12;
+            ctx.stroke();
+          }
+
+          // Torso (body shape)
+          const bodyBottom = Math.min(canvas.height * 0.95, shoulderCenterY + canvas.height * 0.35);
+
+          ctx.beginPath();
+          ctx.moveTo(ls.x - shoulderWidth * 0.08, ls.y);
+          ctx.quadraticCurveTo(
+            ls.x - shoulderWidth * 0.15,
+            (ls.y + bodyBottom) / 2,
+            ls.x + shoulderWidth * 0.1,
+            bodyBottom
+          );
+          ctx.lineTo(rs.x - shoulderWidth * 0.1, bodyBottom);
+          ctx.quadraticCurveTo(
+            rs.x + shoulderWidth * 0.15,
+            (rs.y + bodyBottom) / 2,
+            rs.x + shoulderWidth * 0.08,
+            rs.y
+          );
+          ctx.lineTo(ls.x - shoulderWidth * 0.08, ls.y);
+          ctx.closePath();
+
+          ctx.fillStyle = fillColor;
+          ctx.fill();
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 3;
+          ctx.stroke();
+
+          // Draw arms
+          const armWidth = shoulderWidth * 0.08;
+          const leftElbow = landmarks[LANDMARKS.LEFT_ELBOW];
+          const rightElbow = landmarks[LANDMARKS.RIGHT_ELBOW];
+          const leftWrist = landmarks[LANDMARKS.LEFT_WRIST];
+          const rightWrist = landmarks[LANDMARKS.RIGHT_WRIST];
+
+          // Left arm
+          if (isValid(leftElbow)) {
+            const le = toPixel(leftElbow);
+            ctx.beginPath();
+            ctx.moveTo(ls.x, ls.y);
+            ctx.lineTo(le.x, le.y);
+            ctx.strokeStyle = color;
+            ctx.lineWidth = armWidth;
+            ctx.stroke();
+
+            if (isValid(leftWrist)) {
+              const lw = toPixel(leftWrist);
+              ctx.beginPath();
+              ctx.moveTo(le.x, le.y);
+              ctx.lineTo(lw.x, lw.y);
+              ctx.stroke();
+            }
+          }
+
+          // Right arm
+          if (isValid(rightElbow)) {
+            const re = toPixel(rightElbow);
+            ctx.beginPath();
+            ctx.moveTo(rs.x, rs.y);
+            ctx.lineTo(re.x, re.y);
+            ctx.strokeStyle = color;
+            ctx.lineWidth = armWidth;
+            ctx.stroke();
+
+            if (isValid(rightWrist)) {
+              const rw = toPixel(rightWrist);
+              ctx.beginPath();
+              ctx.moveTo(re.x, re.y);
+              ctx.lineTo(rw.x, rw.y);
+              ctx.stroke();
+            }
+          }
+
+          // Shoulder joints
+          ctx.fillStyle = color;
+          ctx.beginPath();
+          ctx.arc(ls.x, ls.y, 8, 0, 2 * Math.PI);
+          ctx.fill();
+          ctx.beginPath();
+          ctx.arc(rs.x, rs.y, 8, 0, 2 * Math.PI);
+          ctx.fill();
         }
 
         ctx.restore();
