@@ -26,6 +26,7 @@ import * as Notifications from 'expo-notifications';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Localization from 'expo-localization';
 import AdBanner from './AdBanner';
+import Torch from 'react-native-torch';
 
 // Constants for configuration
 const CONFIG = {
@@ -46,16 +47,20 @@ const CONFIG = {
     SESSION_TIME: 86400 * 365,  // 1 year in seconds
     SESSIONS_COUNT: 100000,
   },
+  // Vibration intensity levels (duration in ms)
+  VIBRATION_INTENSITY: {
+    MIN: 100,
+    MAX: 1000,
+    DEFAULT: 400,
+    STEP: 100,
+  },
   // Vibration patterns: [vibrate, pause, vibrate, pause, ...]
   VIBRATION_PATTERNS: {
-    short: [200],                          // 짧은 1회
-    medium: [400],                         // 중간 1회
-    long: [800],                           // 긴 1회
-    double: [200, 100, 200],               // 2회
-    triple: [200, 100, 200, 100, 200],     // 3회
-    sos: [100, 50, 100, 50, 100, 200, 300, 100, 300, 100, 300, 200, 100, 50, 100, 50, 100], // SOS
+    single: (intensity) => [intensity],                    // 1회
+    double: (intensity) => [intensity, 100, intensity],    // 2회
+    triple: (intensity) => [intensity, 100, intensity, 100, intensity], // 3회
   },
-  // Flash patterns: [on_ms, off_ms, ...] - simulated with torch
+  // Flash patterns: [on_ms, off_ms, ...] - for camera torch
   FLASH_PATTERNS: {
     single: [300, 0],                      // 1회 깜빡임
     double: [200, 150, 200, 0],            // 2회 깜빡임
@@ -100,18 +105,17 @@ const TRANSLATIONS = {
     alertSettings: 'Alert Settings',
     vibrationAlert: 'Vibration Alert',
     vibrationAlertDesc: 'Vibrate when reminder activates',
+    vibrationIntensity: 'Vibration Intensity',
+    vibrationIntensityDesc: 'Adjust vibration strength',
     vibrationPattern: 'Vibration Pattern',
     vibrationPatternDesc: 'Choose vibration style',
     vibrationPatterns: {
-      short: 'Short',
-      medium: 'Medium',
-      long: 'Long',
-      double: 'Double',
-      triple: 'Triple',
-      sos: 'SOS',
+      single: '1x',
+      double: '2x',
+      triple: '3x',
     },
-    flashAlert: 'Flash Alert',
-    flashAlertDesc: 'Flash screen when reminder activates',
+    flashAlert: 'Flashlight Alert',
+    flashAlertDesc: 'Flash camera light when reminder activates',
     flashPattern: 'Flash Pattern',
     flashPatternDesc: 'Choose flash style',
     flashPatterns: {
@@ -188,18 +192,17 @@ const TRANSLATIONS = {
     alertSettings: '알림 설정',
     vibrationAlert: '진동 알림',
     vibrationAlertDesc: '자세 확인 시간에 진동으로 알림',
+    vibrationIntensity: '진동 강도',
+    vibrationIntensityDesc: '진동 세기 조절',
     vibrationPattern: '진동 패턴',
-    vibrationPatternDesc: '진동 스타일 선택',
+    vibrationPatternDesc: '진동 횟수 선택',
     vibrationPatterns: {
-      short: '짧게',
-      medium: '보통',
-      long: '길게',
+      single: '1회',
       double: '2회',
       triple: '3회',
-      sos: 'SOS',
     },
-    flashAlert: '화면 깜빡임',
-    flashAlertDesc: '자세 확인 시간에 화면 깜빡임',
+    flashAlert: '플래시 알림',
+    flashAlertDesc: '카메라 플래시로 알림',
     flashPattern: '깜빡임 패턴',
     flashPatternDesc: '깜빡임 스타일 선택',
     flashPatterns: {
@@ -428,9 +431,36 @@ const PatternSelector = React.memo(({ patterns, selected, onSelect, patternLabel
   </View>
 ));
 
+// Intensity selector component (step buttons)
+const IntensitySelector = React.memo(({ value, onChange, min, max, step, t }) => {
+  const levels = [];
+  for (let i = min; i <= max; i += step) {
+    levels.push(i);
+  }
+  return (
+    <View style={styles.intensityContainer}>
+      <Text style={styles.intensityLabel}>{t.vibrationIntensity}</Text>
+      <View style={styles.intensityButtons}>
+        {levels.map((level) => (
+          <TouchableOpacity
+            key={level}
+            style={[styles.intensityButton, value === level && styles.intensityButtonActive]}
+            onPress={() => onChange(level)}
+          >
+            <Text style={[styles.intensityButtonText, value === level && styles.intensityButtonTextActive]}>
+              {level / 100}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+      <Text style={styles.intensityHint}>{value}ms</Text>
+    </View>
+  );
+});
+
 const SettingsModal = React.memo(({
   visible, onClose, sensitivity, setSensitivity,
-  vibrationEnabled, setVibrationEnabled, vibrationPattern, setVibrationPattern,
+  vibrationEnabled, setVibrationEnabled, vibrationIntensity, setVibrationIntensity, vibrationPattern, setVibrationPattern,
   flashEnabled, setFlashEnabled, flashPattern, setFlashPattern,
   alertEnabled, setAlertEnabled, saveSettings, onShowPrivacyPolicy, t
 }) => (
@@ -474,17 +504,31 @@ const SettingsModal = React.memo(({
                 value={vibrationEnabled}
                 onValueChange={(value) => { setVibrationEnabled(value); saveSettings('vibrationEnabled', value); }}
               />
-              {/* Vibration Pattern - only show when vibration is enabled */}
+              {/* Vibration Settings - only show when vibration is enabled */}
               {vibrationEnabled && (
-                <View style={styles.patternSection}>
-                  <Text style={styles.patternTitle}>{t.vibrationPattern}</Text>
-                  <PatternSelector
-                    patterns={CONFIG.VIBRATION_PATTERNS}
-                    selected={vibrationPattern}
-                    onSelect={(pattern) => { setVibrationPattern(pattern); saveSettings('vibrationPattern', pattern); }}
-                    patternLabels={t.vibrationPatterns}
-                  />
-                </View>
+                <>
+                  {/* Vibration Intensity */}
+                  <View style={styles.patternSection}>
+                    <IntensitySelector
+                      value={vibrationIntensity}
+                      onChange={(val) => { setVibrationIntensity(val); saveSettings('vibrationIntensity', val); }}
+                      min={CONFIG.VIBRATION_INTENSITY.MIN}
+                      max={CONFIG.VIBRATION_INTENSITY.MAX}
+                      step={CONFIG.VIBRATION_INTENSITY.STEP}
+                      t={t}
+                    />
+                  </View>
+                  {/* Vibration Pattern */}
+                  <View style={styles.patternSection}>
+                    <Text style={styles.patternTitle}>{t.vibrationPattern}</Text>
+                    <PatternSelector
+                      patterns={CONFIG.VIBRATION_PATTERNS}
+                      selected={vibrationPattern}
+                      onSelect={(pattern) => { setVibrationPattern(pattern); saveSettings('vibrationPattern', pattern); }}
+                      patternLabels={t.vibrationPatterns}
+                    />
+                  </View>
+                </>
               )}
               {/* Flash Toggle */}
               <SettingItem
@@ -611,6 +655,7 @@ export default function App() {
   const [sensitivity, setSensitivity] = useState(0.3);
   const [alertEnabled, setAlertEnabled] = useState(true);
   const [vibrationEnabled, setVibrationEnabled] = useState(true);
+  const [vibrationIntensity, setVibrationIntensity] = useState(CONFIG.VIBRATION_INTENSITY.DEFAULT);
   const [vibrationPattern, setVibrationPattern] = useState('double');
   const [flashEnabled, setFlashEnabled] = useState(false);
   const [flashPattern, setFlashPattern] = useState('double');
@@ -714,7 +759,7 @@ export default function App() {
   useEffect(() => {
     const loadSettings = async () => {
       try {
-        const keys = ['sensitivity', 'alertEnabled', 'vibrationEnabled', 'vibrationPattern', 'flashEnabled', 'flashPattern', 'totalAlerts', 'totalSessionTime', 'sessionsCount', 'goodPostureTime'];
+        const keys = ['sensitivity', 'alertEnabled', 'vibrationEnabled', 'vibrationIntensity', 'vibrationPattern', 'flashEnabled', 'flashPattern', 'totalAlerts', 'totalSessionTime', 'sessionsCount', 'goodPostureTime'];
         const results = await AsyncStorage.multiGet(keys);
         const settings = Object.fromEntries(results);
 
@@ -726,6 +771,12 @@ export default function App() {
         }
         if (settings.alertEnabled) setAlertEnabled(settings.alertEnabled === 'true');
         if (settings.vibrationEnabled) setVibrationEnabled(settings.vibrationEnabled === 'true');
+        if (settings.vibrationIntensity) {
+          const intensity = parseInt(settings.vibrationIntensity, 10);
+          if (!isNaN(intensity) && intensity >= CONFIG.VIBRATION_INTENSITY.MIN && intensity <= CONFIG.VIBRATION_INTENSITY.MAX) {
+            setVibrationIntensity(intensity);
+          }
+        }
         if (settings.vibrationPattern && CONFIG.VIBRATION_PATTERNS[settings.vibrationPattern]) {
           setVibrationPattern(settings.vibrationPattern);
         }
@@ -790,23 +841,31 @@ export default function App() {
     return () => subscription.remove();
   }, [isMonitoring, saveSessionStats]);
 
-  // Flash screen overlay state for visual alert
-  const [showFlashOverlay, setShowFlashOverlay] = useState(false);
-
-  // Execute flash pattern
-  const executeFlashPattern = useCallback(async (pattern) => {
+  // Execute torch flash pattern using camera flashlight
+  const executeTorchPattern = useCallback(async (pattern) => {
     const timings = CONFIG.FLASH_PATTERNS[pattern] || CONFIG.FLASH_PATTERNS.double;
-    for (let i = 0; i < timings.length; i += 2) {
-      const onTime = timings[i];
-      const offTime = timings[i + 1] || 0;
+    try {
+      for (let i = 0; i < timings.length; i += 2) {
+        const onTime = timings[i];
+        const offTime = timings[i + 1] || 0;
 
-      if (onTime > 0) {
-        setShowFlashOverlay(true);
-        await new Promise(resolve => setTimeout(resolve, onTime));
-        setShowFlashOverlay(false);
+        if (onTime > 0) {
+          await Torch.switchState(true);
+          await new Promise(resolve => setTimeout(resolve, onTime));
+          await Torch.switchState(false);
+        }
+        if (offTime > 0) {
+          await new Promise(resolve => setTimeout(resolve, offTime));
+        }
       }
-      if (offTime > 0) {
-        await new Promise(resolve => setTimeout(resolve, offTime));
+    } catch (error) {
+      console.error('Torch error:', error);
+    } finally {
+      // Ensure torch is off
+      try {
+        await Torch.switchState(false);
+      } catch {
+        // Ignore
       }
     }
   }, []);
@@ -816,10 +875,11 @@ export default function App() {
     setTotalAlerts(newTotalAlerts);
     saveSettings('totalAlerts', newTotalAlerts);
 
-    // Vibration alert with pattern
+    // Vibration alert with intensity and pattern
     if (vibrationEnabled) {
       try {
-        const pattern = CONFIG.VIBRATION_PATTERNS[vibrationPattern] || CONFIG.VIBRATION_PATTERNS.double;
+        const patternFn = CONFIG.VIBRATION_PATTERNS[vibrationPattern] || CONFIG.VIBRATION_PATTERNS.double;
+        const pattern = patternFn(vibrationIntensity);
         Vibration.vibrate(pattern);
       } catch (error) {
         console.error('Vibration error:', error);
@@ -832,10 +892,10 @@ export default function App() {
       }
     }
 
-    // Flash alert with pattern
+    // Flashlight (torch) alert with pattern
     if (flashEnabled) {
       try {
-        executeFlashPattern(flashPattern);
+        executeTorchPattern(flashPattern);
       } catch (error) {
         console.error('Flash error:', error);
       }
@@ -856,7 +916,7 @@ export default function App() {
         console.error('Notification error:', error);
       }
     }
-  }, [alertEnabled, vibrationEnabled, vibrationPattern, flashEnabled, flashPattern, totalAlerts, saveSettings, executeFlashPattern, t]);
+  }, [alertEnabled, vibrationEnabled, vibrationIntensity, vibrationPattern, flashEnabled, flashPattern, totalAlerts, saveSettings, executeTorchPattern, t]);
 
   // Handle messages from WebView (pose detection results)
   const handleWebViewMessage = useCallback((event) => {
@@ -1241,11 +1301,6 @@ export default function App() {
       {/* Ad Banner */}
       <AdBanner />
 
-      {/* Flash Overlay for visual alert */}
-      {showFlashOverlay && (
-        <View style={styles.flashOverlay} pointerEvents="none" />
-      )}
-
       {/* Modals */}
       <SettingsModal
         visible={showSettings}
@@ -1254,6 +1309,8 @@ export default function App() {
         setSensitivity={setSensitivity}
         vibrationEnabled={vibrationEnabled}
         setVibrationEnabled={setVibrationEnabled}
+        vibrationIntensity={vibrationIntensity}
+        setVibrationIntensity={setVibrationIntensity}
         vibrationPattern={vibrationPattern}
         setVibrationPattern={setVibrationPattern}
         flashEnabled={flashEnabled}
@@ -1399,6 +1456,13 @@ const styles = StyleSheet.create({
   patternOptionActive: { backgroundColor: COLORS.primary },
   patternLabel: { fontSize: 12, color: COLORS.textSecondary, fontWeight: '500' },
   patternLabelActive: { color: COLORS.text },
-  // Flash overlay for visual alert
-  flashOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(255, 255, 255, 0.9)', zIndex: 9999 },
+  // Intensity selector styles
+  intensityContainer: { marginBottom: 8 },
+  intensityLabel: { fontSize: 13, color: COLORS.textMuted, marginBottom: 8 },
+  intensityButtons: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  intensityButton: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8, backgroundColor: COLORS.surfaceLight, minWidth: 44, alignItems: 'center' },
+  intensityButtonActive: { backgroundColor: COLORS.primary },
+  intensityButtonText: { fontSize: 12, color: COLORS.textSecondary, fontWeight: '600' },
+  intensityButtonTextActive: { color: COLORS.text },
+  intensityHint: { fontSize: 11, color: COLORS.textMuted, marginTop: 6, textAlign: 'center' },
 });
