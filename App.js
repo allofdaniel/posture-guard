@@ -15,6 +15,7 @@ import {
   useWindowDimensions,
   Linking,
   ActivityIndicator,
+  Vibration,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { useCameraPermissions } from 'expo-camera';
@@ -44,6 +45,23 @@ const CONFIG = {
     TOTAL_ALERTS: 1000000,
     SESSION_TIME: 86400 * 365,  // 1 year in seconds
     SESSIONS_COUNT: 100000,
+  },
+  // Vibration patterns: [vibrate, pause, vibrate, pause, ...]
+  VIBRATION_PATTERNS: {
+    short: [200],                          // 짧은 1회
+    medium: [400],                         // 중간 1회
+    long: [800],                           // 긴 1회
+    double: [200, 100, 200],               // 2회
+    triple: [200, 100, 200, 100, 200],     // 3회
+    sos: [100, 50, 100, 50, 100, 200, 300, 100, 300, 100, 300, 200, 100, 50, 100, 50, 100], // SOS
+  },
+  // Flash patterns: [on_ms, off_ms, ...] - simulated with torch
+  FLASH_PATTERNS: {
+    single: [300, 0],                      // 1회 깜빡임
+    double: [200, 150, 200, 0],            // 2회 깜빡임
+    triple: [150, 100, 150, 100, 150, 0],  // 3회 깜빡임
+    rapid: [100, 50, 100, 50, 100, 50, 100, 0], // 빠른 깜빡임
+    pulse: [500, 300, 500, 0],             // 느린 펄스
   },
 };
 
@@ -82,6 +100,27 @@ const TRANSLATIONS = {
     alertSettings: 'Alert Settings',
     vibrationAlert: 'Vibration Alert',
     vibrationAlertDesc: 'Vibrate when reminder activates',
+    vibrationPattern: 'Vibration Pattern',
+    vibrationPatternDesc: 'Choose vibration style',
+    vibrationPatterns: {
+      short: 'Short',
+      medium: 'Medium',
+      long: 'Long',
+      double: 'Double',
+      triple: 'Triple',
+      sos: 'SOS',
+    },
+    flashAlert: 'Flash Alert',
+    flashAlertDesc: 'Flash screen when reminder activates',
+    flashPattern: 'Flash Pattern',
+    flashPatternDesc: 'Choose flash style',
+    flashPatterns: {
+      single: 'Single',
+      double: 'Double',
+      triple: 'Triple',
+      rapid: 'Rapid',
+      pulse: 'Pulse',
+    },
     pushAlert: 'Push Notification',
     pushAlertDesc: 'Show notification at top of screen',
     info: 'Information',
@@ -108,6 +147,13 @@ const TRANSLATIONS = {
     privacyPolicyContent: 'Privacy Policy & Disclaimer\n\nDATA COLLECTION\n• Camera: Used as a mirror only, never recorded or transmitted\n• Usage stats: Session counts and times stored locally on device\n• Advertising: Google Mobile Ads may use anonymized device ID\n\nDATA STORAGE\n• All data stored locally on your device\n• No external servers or cloud storage used\n• You can clear data anytime via device settings\n\nYOUR RIGHTS\n• Access, modify, or delete your data anytime\n• Disable notifications in app settings\n• Opt-out of personalized ads in device settings\n\nDISCLAIMER\nThis app is NOT a medical device. It provides timed reminders only and does not diagnose, treat, or prevent any medical condition. Consult healthcare professionals for medical concerns.\n\nContact: allofdaniel@gmail.com',
     ok: 'OK',
     times: 'times',
+    sessionComplete: 'Session Complete',
+    sessionSummary: 'Session Summary',
+    alertsReceived: 'Alerts Received',
+    duration: 'Duration',
+    close: 'Close',
+    greatJob: 'Great job! Keep up the good posture!',
+    needsImprovement: 'Try to maintain better posture next time!',
   },
   ko: {
     appName: '자세 알리미',
@@ -142,6 +188,27 @@ const TRANSLATIONS = {
     alertSettings: '알림 설정',
     vibrationAlert: '진동 알림',
     vibrationAlertDesc: '자세 확인 시간에 진동으로 알림',
+    vibrationPattern: '진동 패턴',
+    vibrationPatternDesc: '진동 스타일 선택',
+    vibrationPatterns: {
+      short: '짧게',
+      medium: '보통',
+      long: '길게',
+      double: '2회',
+      triple: '3회',
+      sos: 'SOS',
+    },
+    flashAlert: '화면 깜빡임',
+    flashAlertDesc: '자세 확인 시간에 화면 깜빡임',
+    flashPattern: '깜빡임 패턴',
+    flashPatternDesc: '깜빡임 스타일 선택',
+    flashPatterns: {
+      single: '1회',
+      double: '2회',
+      triple: '3회',
+      rapid: '빠르게',
+      pulse: '느리게',
+    },
     pushAlert: '푸시 알림',
     pushAlertDesc: '화면 상단에 알림 표시',
     info: '정보',
@@ -168,6 +235,13 @@ const TRANSLATIONS = {
     privacyPolicyContent: '개인정보처리방침 및 면책조항\n\n데이터 수집\n• 카메라: 거울처럼 화면에만 표시되며, 녹화나 전송되지 않습니다\n• 사용 통계: 세션 횟수와 시간이 기기에만 저장됩니다\n• 광고: Google Mobile Ads가 익명화된 기기 ID를 사용할 수 있습니다\n\n데이터 저장\n• 모든 데이터는 사용자 기기에만 저장됩니다\n• 외부 서버나 클라우드 저장소를 사용하지 않습니다\n• 기기 설정에서 언제든 데이터를 삭제할 수 있습니다\n\n사용자 권리\n• 언제든 데이터에 접근, 수정, 삭제할 수 있습니다\n• 앱 설정에서 알림을 끌 수 있습니다\n• 기기 설정에서 맞춤 광고를 거부할 수 있습니다\n\n면책조항\n이 앱은 의료기기가 아닙니다. 주기적인 자세 확인 알림만 제공하며, 어떠한 의료 상태도 진단, 치료, 예방하지 않습니다. 의료 관련 사항은 전문 의료인과 상담하세요.\n\n문의: allofdaniel@gmail.com',
     ok: '확인',
     times: '회',
+    sessionComplete: '세션 완료',
+    sessionSummary: '세션 요약',
+    alertsReceived: '받은 알림',
+    duration: '시간',
+    close: '닫기',
+    greatJob: '잘하셨어요! 바른 자세를 유지하세요!',
+    needsImprovement: '다음엔 더 바른 자세를 유지해보세요!',
   },
 };
 
@@ -337,7 +411,29 @@ const SettingItem = React.memo(({ label, description, value, onValueChange, isLa
   </View>
 ));
 
-const SettingsModal = React.memo(({ visible, onClose, sensitivity, setSensitivity, vibrationEnabled, setVibrationEnabled, alertEnabled, setAlertEnabled, saveSettings, onShowPrivacyPolicy, t }) => (
+// Pattern selector component
+const PatternSelector = React.memo(({ patterns, selected, onSelect, patternLabels }) => (
+  <View style={styles.patternContainer}>
+    {Object.keys(patterns).map((key) => (
+      <TouchableOpacity
+        key={key}
+        style={[styles.patternOption, selected === key && styles.patternOptionActive]}
+        onPress={() => onSelect(key)}
+      >
+        <Text style={[styles.patternLabel, selected === key && styles.patternLabelActive]}>
+          {patternLabels[key] || key}
+        </Text>
+      </TouchableOpacity>
+    ))}
+  </View>
+));
+
+const SettingsModal = React.memo(({
+  visible, onClose, sensitivity, setSensitivity,
+  vibrationEnabled, setVibrationEnabled, vibrationPattern, setVibrationPattern,
+  flashEnabled, setFlashEnabled, flashPattern, setFlashPattern,
+  alertEnabled, setAlertEnabled, saveSettings, onShowPrivacyPolicy, t
+}) => (
   <Modal visible={visible} animationType="slide" transparent={true} onRequestClose={onClose}>
     <View style={styles.modalOverlay}>
       <View style={styles.modalContent}>
@@ -371,12 +467,45 @@ const SettingsModal = React.memo(({ visible, onClose, sensitivity, setSensitivit
           <View style={styles.settingsSection}>
             <Text style={styles.sectionTitle}>{t.alertSettings}</Text>
             <View style={styles.settingsList}>
+              {/* Vibration Toggle */}
               <SettingItem
                 label={t.vibrationAlert}
                 description={t.vibrationAlertDesc}
                 value={vibrationEnabled}
                 onValueChange={(value) => { setVibrationEnabled(value); saveSettings('vibrationEnabled', value); }}
               />
+              {/* Vibration Pattern - only show when vibration is enabled */}
+              {vibrationEnabled && (
+                <View style={styles.patternSection}>
+                  <Text style={styles.patternTitle}>{t.vibrationPattern}</Text>
+                  <PatternSelector
+                    patterns={CONFIG.VIBRATION_PATTERNS}
+                    selected={vibrationPattern}
+                    onSelect={(pattern) => { setVibrationPattern(pattern); saveSettings('vibrationPattern', pattern); }}
+                    patternLabels={t.vibrationPatterns}
+                  />
+                </View>
+              )}
+              {/* Flash Toggle */}
+              <SettingItem
+                label={t.flashAlert}
+                description={t.flashAlertDesc}
+                value={flashEnabled}
+                onValueChange={(value) => { setFlashEnabled(value); saveSettings('flashEnabled', value); }}
+              />
+              {/* Flash Pattern - only show when flash is enabled */}
+              {flashEnabled && (
+                <View style={styles.patternSection}>
+                  <Text style={styles.patternTitle}>{t.flashPattern}</Text>
+                  <PatternSelector
+                    patterns={CONFIG.FLASH_PATTERNS}
+                    selected={flashPattern}
+                    onSelect={(pattern) => { setFlashPattern(pattern); saveSettings('flashPattern', pattern); }}
+                    patternLabels={t.flashPatterns}
+                  />
+                </View>
+              )}
+              {/* Push Notification Toggle */}
               <SettingItem
                 label={t.pushAlert}
                 description={t.pushAlertDesc}
@@ -428,6 +557,43 @@ const StatsModal = React.memo(({ visible, onClose, stats, t }) => (
   </Modal>
 ));
 
+const SessionResultModal = React.memo(({ visible, onClose, result, t }) => {
+  if (!visible || !result) return null;
+  const isGoodSession = result.alerts < 5;
+
+  return (
+    <Modal visible={true} animationType="fade" transparent={true} onRequestClose={onClose}>
+      <View style={styles.resultModalOverlay}>
+        <View style={styles.resultModalContent}>
+          <Text style={styles.resultEmoji}>{isGoodSession ? '🎉' : '💪'}</Text>
+          <Text style={styles.resultTitle}>{t.sessionComplete}</Text>
+
+          <View style={styles.resultStats}>
+            <View style={styles.resultStatRow}>
+              <Text style={styles.resultStatLabel}>{t.duration}</Text>
+              <Text style={styles.resultStatValue}>{result.duration}</Text>
+            </View>
+            <View style={styles.resultStatRow}>
+              <Text style={styles.resultStatLabel}>{t.alertsReceived}</Text>
+              <Text style={[styles.resultStatValue, { color: result.alerts > 10 ? COLORS.warning : COLORS.success }]}>
+                {result.alerts}
+              </Text>
+            </View>
+          </View>
+
+          <Text style={styles.resultMessage}>
+            {isGoodSession ? t.greatJob : t.needsImprovement}
+          </Text>
+
+          <TouchableOpacity style={styles.resultCloseButton} onPress={onClose}>
+            <Text style={styles.resultCloseButtonText}>{t.close}</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+});
+
 export default function App() {
   // Use reactive dimensions hook for orientation changes
   const { width, height } = useWindowDimensions();
@@ -445,6 +611,9 @@ export default function App() {
   const [sensitivity, setSensitivity] = useState(0.3);
   const [alertEnabled, setAlertEnabled] = useState(true);
   const [vibrationEnabled, setVibrationEnabled] = useState(true);
+  const [vibrationPattern, setVibrationPattern] = useState('double');
+  const [flashEnabled, setFlashEnabled] = useState(false);
+  const [flashPattern, setFlashPattern] = useState('double');
   const [totalAlerts, setTotalAlerts] = useState(0);
   const [sessionTime, setSessionTime] = useState(0);
   const [totalSessionTime, setTotalSessionTime] = useState(0);
@@ -452,6 +621,8 @@ export default function App() {
   const [goodPostureTime, setGoodPostureTime] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
   const [showStats, setShowStats] = useState(false);
+  const [showSessionResult, setShowSessionResult] = useState(false);
+  const [sessionResult, setSessionResult] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
 
   const webViewRef = useRef(null);
@@ -543,7 +714,7 @@ export default function App() {
   useEffect(() => {
     const loadSettings = async () => {
       try {
-        const keys = ['sensitivity', 'alertEnabled', 'vibrationEnabled', 'totalAlerts', 'totalSessionTime', 'sessionsCount', 'goodPostureTime'];
+        const keys = ['sensitivity', 'alertEnabled', 'vibrationEnabled', 'vibrationPattern', 'flashEnabled', 'flashPattern', 'totalAlerts', 'totalSessionTime', 'sessionsCount', 'goodPostureTime'];
         const results = await AsyncStorage.multiGet(keys);
         const settings = Object.fromEntries(results);
 
@@ -555,6 +726,13 @@ export default function App() {
         }
         if (settings.alertEnabled) setAlertEnabled(settings.alertEnabled === 'true');
         if (settings.vibrationEnabled) setVibrationEnabled(settings.vibrationEnabled === 'true');
+        if (settings.vibrationPattern && CONFIG.VIBRATION_PATTERNS[settings.vibrationPattern]) {
+          setVibrationPattern(settings.vibrationPattern);
+        }
+        if (settings.flashEnabled) setFlashEnabled(settings.flashEnabled === 'true');
+        if (settings.flashPattern && CONFIG.FLASH_PATTERNS[settings.flashPattern]) {
+          setFlashPattern(settings.flashPattern);
+        }
 
         // Validate numeric values with bounds checking
         const safeParseInt = (value, max = Number.MAX_SAFE_INTEGER) => {
@@ -612,19 +790,58 @@ export default function App() {
     return () => subscription.remove();
   }, [isMonitoring, saveSessionStats]);
 
+  // Flash screen overlay state for visual alert
+  const [showFlashOverlay, setShowFlashOverlay] = useState(false);
+
+  // Execute flash pattern
+  const executeFlashPattern = useCallback(async (pattern) => {
+    const timings = CONFIG.FLASH_PATTERNS[pattern] || CONFIG.FLASH_PATTERNS.double;
+    for (let i = 0; i < timings.length; i += 2) {
+      const onTime = timings[i];
+      const offTime = timings[i + 1] || 0;
+
+      if (onTime > 0) {
+        setShowFlashOverlay(true);
+        await new Promise(resolve => setTimeout(resolve, onTime));
+        setShowFlashOverlay(false);
+      }
+      if (offTime > 0) {
+        await new Promise(resolve => setTimeout(resolve, offTime));
+      }
+    }
+  }, []);
+
   const triggerBadPostureAlert = useCallback(async () => {
     const newTotalAlerts = totalAlerts + 1;
     setTotalAlerts(newTotalAlerts);
     saveSettings('totalAlerts', newTotalAlerts);
 
+    // Vibration alert with pattern
     if (vibrationEnabled) {
       try {
-        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+        const pattern = CONFIG.VIBRATION_PATTERNS[vibrationPattern] || CONFIG.VIBRATION_PATTERNS.double;
+        Vibration.vibrate(pattern);
       } catch (error) {
-        console.error('Haptics error:', error);
+        console.error('Vibration error:', error);
+        // Fallback to haptics if Vibration fails
+        try {
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+        } catch {
+          // Ignore haptics error
+        }
       }
     }
 
+    // Flash alert with pattern
+    if (flashEnabled) {
+      try {
+        executeFlashPattern(flashPattern);
+      } catch (error) {
+        console.error('Flash error:', error);
+      }
+    }
+
+    // Push notification
     if (alertEnabled) {
       try {
         await Notifications.scheduleNotificationAsync({
@@ -639,7 +856,7 @@ export default function App() {
         console.error('Notification error:', error);
       }
     }
-  }, [alertEnabled, vibrationEnabled, totalAlerts, saveSettings, t]);
+  }, [alertEnabled, vibrationEnabled, vibrationPattern, flashEnabled, flashPattern, totalAlerts, saveSettings, executeFlashPattern, t]);
 
   // Handle messages from WebView (pose detection results)
   const handleWebViewMessage = useCallback((event) => {
@@ -745,29 +962,6 @@ export default function App() {
     };
   }, [isMonitoring, sensitivity, sendToWebView]);
 
-  const toggleMonitoring = useCallback(async () => {
-    // Prevent rapid clicks
-    if (isProcessing) return;
-    setIsProcessing(true);
-
-    try {
-      if (isMonitoring) {
-        await saveSessionStats();
-        const newSessionsCount = sessionsCount + 1;
-        setSessionsCount(newSessionsCount);
-        await saveSettings('sessionsCount', newSessionsCount);
-      } else {
-        setSessionTime(0);
-        setBadPostureCount(0);
-      }
-      setIsMonitoring(prev => !prev);
-      setPostureStatus(POSTURE_STATUS.GOOD);
-    } finally {
-      // Delay to prevent rapid clicking
-      setTimeout(() => setIsProcessing(false), CONFIG.BUTTON_DEBOUNCE);
-    }
-  }, [isMonitoring, isProcessing, saveSessionStats, sessionsCount, saveSettings]);
-
   const formatTime = useCallback((seconds) => {
     // Handle invalid input
     if (typeof seconds !== 'number' || isNaN(seconds) || seconds < 0) {
@@ -783,6 +977,47 @@ export default function App() {
     }
     return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
   }, []);
+
+  const toggleMonitoring = useCallback(async () => {
+    // Prevent rapid clicks
+    if (isProcessing) return;
+    setIsProcessing(true);
+
+    try {
+      if (isMonitoring) {
+        // Stop monitoring first
+        setIsMonitoring(false);
+        setPostureStatus(POSTURE_STATUS.GOOD);
+
+        // Capture session data before resetting
+        const sessionDuration = formatTime(sessionTimeRef.current);
+        const sessionAlerts = totalAlerts;
+
+        // Save session stats
+        await saveSessionStats();
+        const newSessionsCount = sessionsCount + 1;
+        setSessionsCount(newSessionsCount);
+        await saveSettings('sessionsCount', newSessionsCount);
+
+        // Show session result using Alert
+        Alert.alert(
+          'Session Complete',
+          `Duration: ${sessionDuration}\nAlerts: ${sessionAlerts}`,
+          [{ text: 'OK', style: 'default' }]
+        );
+      } else {
+        // Close result modal if open
+        setShowSessionResult(false);
+        setSessionTime(0);
+        setBadPostureCount(0);
+        setIsMonitoring(true);
+        setPostureStatus(POSTURE_STATUS.GOOD);
+      }
+    } finally {
+      // Delay to prevent rapid clicking
+      setTimeout(() => setIsProcessing(false), CONFIG.BUTTON_DEBOUNCE);
+    }
+  }, [isMonitoring, isProcessing, saveSessionStats, sessionsCount, saveSettings, formatTime, totalAlerts, t]);
 
   const statsData = useMemo(() => ({
     totalAlerts,
@@ -891,10 +1126,10 @@ export default function App() {
       </View>
 
       {/* Camera View with AI Pose Detection */}
-      <Animated.View style={[styles.cameraContainer, { height: height * 0.45, transform: [{ scale: pulseAnim }] }]}>
+      <Animated.View style={[styles.cameraContainer, { flex: 1, transform: [{ scale: pulseAnim }] }]}>
         <WebView
           ref={webViewRef}
-          source={{ html: POSE_DETECTION_HTML }}
+          source={{ html: POSE_DETECTION_HTML, baseUrl: 'https://localhost/' }}
           style={styles.camera}
           onMessage={handleWebViewMessage}
           javaScriptEnabled={true}
@@ -908,8 +1143,22 @@ export default function App() {
           scalesPageToFit={true}
           mediaCapturePermissionGrantType="grant"
           androidLayerType="hardware"
-          onPermissionRequest={(event) => {
-            event.nativeEvent.grant && event.nativeEvent.grant();
+          geolocationEnabled={false}
+          allowsProtectedMedia={true}
+          webviewDebuggingEnabled={__DEV__}
+          onPermissionRequest={(request) => {
+            // Grant all permissions requested by WebView (camera, audio)
+            if (request && request.grant) {
+              request.grant(request.resources);
+            }
+          }}
+          onError={(syntheticEvent) => {
+            const { nativeEvent } = syntheticEvent;
+            console.warn('WebView error:', nativeEvent);
+          }}
+          onHttpError={(syntheticEvent) => {
+            const { nativeEvent } = syntheticEvent;
+            console.warn('WebView HTTP error:', nativeEvent.statusCode);
           }}
         />
         {/* Overlay for session info - shown on top of WebView */}
@@ -934,29 +1183,25 @@ export default function App() {
         )}
       </Animated.View>
 
-      {/* Quick Stats */}
-      <View style={styles.quickStats} accessibilityRole="summary">
-        <View style={styles.quickStatItem} accessibilityLabel={`${t.alerts}: ${totalAlerts}`}>
-          <Text style={styles.quickStatIcon} accessibilityElementsHidden>🔔</Text>
-          <Text style={styles.quickStatValue} accessibilityElementsHidden>{totalAlerts}</Text>
-          <Text style={styles.quickStatLabel} accessibilityElementsHidden>{t.alerts}</Text>
+      {/* Compact Bottom Control Panel */}
+      <View style={styles.bottomPanel}>
+        {/* Stats Row */}
+        <View style={styles.statsRow}>
+          <View style={styles.statItem}>
+            <Text style={styles.statValue}>{totalAlerts}</Text>
+            <Text style={styles.statLabel}>{t.alerts}</Text>
+          </View>
+          <View style={styles.statItem}>
+            <Text style={styles.statValue}>{formatTime(sessionTime)}</Text>
+            <Text style={styles.statLabel}>{t.currentSession}</Text>
+          </View>
+          <View style={styles.statItem}>
+            <Text style={styles.statValue}>{sessionsCount}</Text>
+            <Text style={styles.statLabel}>{t.totalSessions}</Text>
+          </View>
         </View>
-        <View style={styles.quickStatDivider} />
-        <View style={styles.quickStatItem} accessibilityLabel={`${t.currentSession}: ${formatTime(sessionTime)}`}>
-          <Text style={styles.quickStatIcon} accessibilityElementsHidden>⏱️</Text>
-          <Text style={styles.quickStatValue} accessibilityElementsHidden>{formatTime(sessionTime)}</Text>
-          <Text style={styles.quickStatLabel} accessibilityElementsHidden>{t.currentSession}</Text>
-        </View>
-        <View style={styles.quickStatDivider} />
-        <View style={styles.quickStatItem} accessibilityLabel={`${t.totalSessions}: ${sessionsCount}`}>
-          <Text style={styles.quickStatIcon} accessibilityElementsHidden>📊</Text>
-          <Text style={styles.quickStatValue} accessibilityElementsHidden>{sessionsCount}</Text>
-          <Text style={styles.quickStatLabel} accessibilityElementsHidden>{t.totalSessions}</Text>
-        </View>
-      </View>
 
-      {/* Control Section */}
-      <View style={styles.controlSection}>
+        {/* Main Button */}
         <TouchableOpacity
           style={[
             styles.mainButton,
@@ -966,43 +1211,40 @@ export default function App() {
           onPress={toggleMonitoring}
           activeOpacity={0.8}
           disabled={isProcessing}
-          accessibilityRole="button"
-          accessibilityLabel={isMonitoring ? t.stopMonitoring : t.startMonitoring}
-          accessibilityState={{ checked: isMonitoring, disabled: isProcessing }}
         >
-          <Text style={styles.mainButtonEmoji}>{isMonitoring ? '⏹️' : '▶️'}</Text>
           <Text style={styles.mainButtonText}>
             {isMonitoring ? t.stopMonitoring : t.startMonitoring}
           </Text>
         </TouchableOpacity>
 
-        <View style={styles.quickSettings}>
-          <Text style={styles.quickSettingsLabel} accessibilityRole="header">{t.sensitivity}</Text>
-          <View style={styles.quickSettingsButtons} accessibilityRole="radiogroup">
-            {[
-              { value: 0.1, label: t.low },
-              { value: 0.3, label: t.medium },
-              { value: 0.5, label: t.high }
-            ].map((item) => (
-              <TouchableOpacity
-                key={item.value}
-                style={[styles.quickSettingsButton, sensitivity === item.value && styles.quickSettingsButtonActive]}
-                onPress={() => { setSensitivity(item.value); saveSettings('sensitivity', item.value); }}
-                accessibilityRole="radio"
-                accessibilityLabel={`${t.sensitivity}: ${item.label}`}
-                accessibilityState={{ selected: sensitivity === item.value }}
-              >
-                <Text style={[styles.quickSettingsButtonText, sensitivity === item.value && styles.quickSettingsButtonTextActive]}>
-                  {item.label}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
+        {/* Sensitivity Row */}
+        <View style={styles.sensitivityRow}>
+          <Text style={styles.sensitivityLabel}>{t.sensitivity}:</Text>
+          {[
+            { value: 0.1, label: t.low },
+            { value: 0.3, label: t.medium },
+            { value: 0.5, label: t.high }
+          ].map((item) => (
+            <TouchableOpacity
+              key={item.value}
+              style={[styles.sensButton, sensitivity === item.value && styles.sensButtonActive]}
+              onPress={() => { setSensitivity(item.value); saveSettings('sensitivity', item.value); }}
+            >
+              <Text style={[styles.sensButtonText, sensitivity === item.value && styles.sensButtonTextActive]}>
+                {item.label}
+              </Text>
+            </TouchableOpacity>
+          ))}
         </View>
       </View>
 
       {/* Ad Banner */}
       <AdBanner />
+
+      {/* Flash Overlay for visual alert */}
+      {showFlashOverlay && (
+        <View style={styles.flashOverlay} pointerEvents="none" />
+      )}
 
       {/* Modals */}
       <SettingsModal
@@ -1012,6 +1254,12 @@ export default function App() {
         setSensitivity={setSensitivity}
         vibrationEnabled={vibrationEnabled}
         setVibrationEnabled={setVibrationEnabled}
+        vibrationPattern={vibrationPattern}
+        setVibrationPattern={setVibrationPattern}
+        flashEnabled={flashEnabled}
+        setFlashEnabled={setFlashEnabled}
+        flashPattern={flashPattern}
+        setFlashPattern={setFlashPattern}
         alertEnabled={alertEnabled}
         setAlertEnabled={setAlertEnabled}
         saveSettings={saveSettings}
@@ -1022,6 +1270,12 @@ export default function App() {
         visible={showStats}
         onClose={() => setShowStats(false)}
         stats={statsData}
+        t={t}
+      />
+      <SessionResultModal
+        visible={showSessionResult}
+        onClose={() => setShowSessionResult(false)}
+        result={sessionResult}
         t={t}
       />
     </SafeAreaView>
@@ -1053,14 +1307,14 @@ const styles = StyleSheet.create({
   permissionNote: { fontSize: 14, color: COLORS.textMuted, textAlign: 'center', marginBottom: 32, lineHeight: 20 },
   permissionButton: { backgroundColor: COLORS.primary, paddingVertical: 16, paddingHorizontal: 40, borderRadius: 12 },
   permissionButtonText: { color: COLORS.text, fontSize: 18, fontWeight: 'bold' },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 12, paddingTop: Platform.OS === 'android' ? 40 : 12 },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 4, paddingTop: Platform.OS === 'android' ? 28 : 4, position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10 },
   headerLeft: {},
-  headerTitle: { fontSize: 20, fontWeight: 'bold', color: COLORS.text },
-  headerSubtitle: { fontSize: 12, color: COLORS.textMuted, marginTop: 2 },
-  headerRight: { flexDirection: 'row', gap: 8 },
-  headerButton: { width: 44, height: 44, borderRadius: 12, backgroundColor: COLORS.surface, justifyContent: 'center', alignItems: 'center' },
-  headerButtonIcon: { fontSize: 18 },
-  cameraContainer: { marginHorizontal: 16, borderRadius: 24, overflow: 'hidden', backgroundColor: '#000' },
+  headerTitle: { fontSize: 14, fontWeight: 'bold', color: COLORS.text },
+  headerSubtitle: { fontSize: 9, color: COLORS.textMuted },
+  headerRight: { flexDirection: 'row', gap: 4 },
+  headerButton: { width: 32, height: 32, borderRadius: 8, backgroundColor: 'rgba(30,30,46,0.8)', justifyContent: 'center', alignItems: 'center' },
+  headerButtonIcon: { fontSize: 12 },
+  cameraContainer: { flex: 1, backgroundColor: '#000' },
   camera: { flex: 1 },
   statusOverlay: { flex: 1, borderWidth: 4, borderRadius: 20, justifyContent: 'space-between', alignItems: 'center', padding: 16 },
   statusBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 24 },
@@ -1073,23 +1327,19 @@ const styles = StyleSheet.create({
   guideEmoji: { fontSize: 56, marginBottom: 16 },
   guideText: { fontSize: 18, color: COLORS.text, textAlign: 'center', lineHeight: 26, fontWeight: '500' },
   guideHint: { fontSize: 13, color: COLORS.textMuted, marginTop: 12, textAlign: 'center' },
-  quickStats: { flexDirection: 'row', marginHorizontal: 16, marginTop: 16, backgroundColor: COLORS.surface, borderRadius: 16, padding: 16 },
-  quickStatItem: { flex: 1, alignItems: 'center' },
-  quickStatIcon: { fontSize: 20, marginBottom: 4 },
-  quickStatValue: { fontSize: 20, fontWeight: 'bold', color: COLORS.text },
-  quickStatLabel: { fontSize: 11, color: COLORS.textMuted, marginTop: 2 },
-  quickStatDivider: { width: 1, backgroundColor: COLORS.border, marginVertical: 4 },
-  controlSection: { flex: 1, paddingHorizontal: 16, paddingTop: 16, justifyContent: 'flex-start' },
-  mainButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 18, borderRadius: 16, gap: 8 },
-  mainButtonEmoji: { fontSize: 20 },
-  mainButtonText: { color: COLORS.text, fontSize: 18, fontWeight: 'bold' },
-  quickSettings: { marginTop: 16, backgroundColor: COLORS.surface, borderRadius: 16, padding: 16 },
-  quickSettingsLabel: { fontSize: 13, color: COLORS.textSecondary, marginBottom: 12 },
-  quickSettingsButtons: { flexDirection: 'row', gap: 8 },
-  quickSettingsButton: { flex: 1, paddingVertical: 12, borderRadius: 10, backgroundColor: COLORS.surfaceLight, alignItems: 'center' },
-  quickSettingsButtonActive: { backgroundColor: COLORS.primary },
-  quickSettingsButtonText: { fontSize: 14, color: COLORS.textSecondary, fontWeight: '500' },
-  quickSettingsButtonTextActive: { color: COLORS.text, fontWeight: 'bold' },
+  bottomPanel: { backgroundColor: COLORS.surface, paddingHorizontal: 12, paddingVertical: 8, borderTopLeftRadius: 16, borderTopRightRadius: 16 },
+  statsRow: { flexDirection: 'row', justifyContent: 'space-around', marginBottom: 8 },
+  statItem: { alignItems: 'center' },
+  statValue: { fontSize: 14, fontWeight: 'bold', color: COLORS.text },
+  statLabel: { fontSize: 9, color: COLORS.textMuted },
+  mainButton: { alignItems: 'center', justifyContent: 'center', paddingVertical: 10, borderRadius: 10, marginBottom: 8 },
+  mainButtonText: { color: COLORS.text, fontSize: 14, fontWeight: 'bold' },
+  sensitivityRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  sensitivityLabel: { fontSize: 10, color: COLORS.textMuted, marginRight: 4 },
+  sensButton: { paddingVertical: 4, paddingHorizontal: 12, borderRadius: 6, backgroundColor: COLORS.surfaceLight },
+  sensButtonActive: { backgroundColor: COLORS.primary },
+  sensButtonText: { fontSize: 10, color: COLORS.textSecondary },
+  sensButtonTextActive: { color: COLORS.text, fontWeight: 'bold' },
   adContainer: { alignItems: 'center', backgroundColor: COLORS.background, paddingBottom: Platform.OS === 'ios' ? 0 : 8 },
   modalOverlay: { flex: 1, backgroundColor: COLORS.overlayStrong, justifyContent: 'flex-end' },
   modalContent: { backgroundColor: COLORS.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '80%' },
@@ -1130,4 +1380,25 @@ const styles = StyleSheet.create({
   issuesContainer: { backgroundColor: COLORS.overlay, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 10, marginTop: 8 },
   issuesText: { fontSize: 12, color: COLORS.text, fontWeight: '500' },
   loadingOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: COLORS.overlayStrong, justifyContent: 'center', alignItems: 'center' },
+  resultModalOverlay: { flex: 1, backgroundColor: COLORS.overlayStrong, justifyContent: 'center', alignItems: 'center', padding: 24 },
+  resultModalContent: { backgroundColor: COLORS.surface, borderRadius: 24, padding: 32, alignItems: 'center', width: '100%', maxWidth: 320 },
+  resultEmoji: { fontSize: 64, marginBottom: 16 },
+  resultTitle: { fontSize: 24, fontWeight: 'bold', color: COLORS.text, marginBottom: 24 },
+  resultStats: { width: '100%', marginBottom: 20 },
+  resultStatRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: COLORS.border },
+  resultStatLabel: { fontSize: 16, color: COLORS.textSecondary },
+  resultStatValue: { fontSize: 18, fontWeight: 'bold', color: COLORS.text },
+  resultMessage: { fontSize: 14, color: COLORS.textSecondary, textAlign: 'center', marginBottom: 24 },
+  resultCloseButton: { backgroundColor: COLORS.primary, paddingVertical: 14, paddingHorizontal: 48, borderRadius: 12 },
+  resultCloseButtonText: { color: COLORS.text, fontSize: 16, fontWeight: 'bold' },
+  // Pattern selector styles
+  patternSection: { paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: COLORS.border },
+  patternTitle: { fontSize: 13, color: COLORS.textMuted, marginBottom: 8 },
+  patternContainer: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  patternOption: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 8, backgroundColor: COLORS.surfaceLight, minWidth: 60, alignItems: 'center' },
+  patternOptionActive: { backgroundColor: COLORS.primary },
+  patternLabel: { fontSize: 12, color: COLORS.textSecondary, fontWeight: '500' },
+  patternLabelActive: { color: COLORS.text },
+  // Flash overlay for visual alert
+  flashOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(255, 255, 255, 0.9)', zIndex: 9999 },
 });
