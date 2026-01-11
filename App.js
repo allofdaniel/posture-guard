@@ -844,29 +844,35 @@ export default function App() {
 
   // Execute torch flash pattern using camera flashlight
   const executeTorchPattern = useCallback(async (pattern) => {
+    console.log('executeTorchPattern called with pattern:', pattern);
     const timings = CONFIG.FLASH_PATTERNS[pattern] || CONFIG.FLASH_PATTERNS.double;
+    console.log('Torch timings:', timings);
+
     try {
       for (let i = 0; i < timings.length; i += 2) {
         const onTime = timings[i];
         const offTime = timings[i + 1] || 0;
 
         if (onTime > 0) {
-          await Torch.switchState(true);
+          console.log('Torch ON for', onTime, 'ms');
+          const result = await Torch.switchState(true);
+          console.log('Torch.switchState(true) result:', result);
           await new Promise(resolve => setTimeout(resolve, onTime));
           await Torch.switchState(false);
+          console.log('Torch OFF');
         }
         if (offTime > 0) {
           await new Promise(resolve => setTimeout(resolve, offTime));
         }
       }
     } catch (error) {
-      console.error('Torch error:', error);
+      console.error('Torch error:', error.message || error);
     } finally {
       // Ensure torch is off
       try {
         await Torch.switchState(false);
-      } catch {
-        // Ignore
+      } catch (e) {
+        console.log('Torch off error:', e);
       }
     }
   }, []);
@@ -1064,6 +1070,14 @@ export default function App() {
           console.log('Keep-awake deactivate error:', e);
         }
 
+        // Dismiss monitoring notification
+        try {
+          await Notifications.dismissNotificationAsync('monitoring-notification');
+          console.log('Monitoring notification dismissed');
+        } catch (e) {
+          console.log('Notification dismiss error:', e);
+        }
+
         // Capture session data before resetting
         const sessionDuration = formatTime(sessionTimeRef.current);
         const sessionAlerts = totalAlerts;
@@ -1094,6 +1108,23 @@ export default function App() {
           console.log('Keep-awake activated - screen will stay on');
         } catch (e) {
           console.log('Keep-awake activate error:', e);
+        }
+
+        // Show persistent notification for monitoring
+        try {
+          await Notifications.scheduleNotificationAsync({
+            content: {
+              title: '자세 모니터링 중',
+              body: '좋은 자세를 유지하세요. 탭하여 앱으로 돌아가기',
+              sticky: true,
+              autoDismiss: false,
+            },
+            trigger: null,
+            identifier: 'monitoring-notification',
+          });
+          console.log('Monitoring notification shown');
+        } catch (e) {
+          console.log('Monitoring notification error:', e);
         }
       }
     } finally {
