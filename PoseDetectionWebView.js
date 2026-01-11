@@ -165,52 +165,52 @@ export const POSE_DETECTION_HTML = `
         const smoothLeft = smoothPoints(contourLeft, 4);
         const smoothRight = smoothPoints(contourRight, 4);
 
-        // Draw smooth outline
+        // Draw soft glowing outline with multiple passes
         ctx.save();
-
-        // Glow settings
-        ctx.shadowColor = "rgba(0, 220, 255, 1)";
-        ctx.shadowBlur = 20;
-        ctx.strokeStyle = "rgba(0, 220, 255, 0.95)";
-        ctx.lineWidth = 3;
         ctx.lineCap = "round";
         ctx.lineJoin = "round";
 
-        // Draw left contour with bezier curves
-        if(smoothLeft.length > 2) {
+        // Helper function to draw contour
+        function drawContour(points) {
+          if(points.length < 3) return;
           ctx.beginPath();
-          ctx.moveTo(smoothLeft[0].x, smoothLeft[0].y);
-
-          for(let i = 1; i < smoothLeft.length - 1; i++) {
-            const xc = (smoothLeft[i].x + smoothLeft[i + 1].x) / 2;
-            const yc = (smoothLeft[i].y + smoothLeft[i + 1].y) / 2;
-            ctx.quadraticCurveTo(smoothLeft[i].x, smoothLeft[i].y, xc, yc);
+          ctx.moveTo(points[0].x, points[0].y);
+          for(let i = 1; i < points.length - 1; i++) {
+            const xc = (points[i].x + points[i + 1].x) / 2;
+            const yc = (points[i].y + points[i + 1].y) / 2;
+            ctx.quadraticCurveTo(points[i].x, points[i].y, xc, yc);
           }
           ctx.stroke();
         }
 
-        // Draw right contour with bezier curves
-        if(smoothRight.length > 2) {
-          ctx.beginPath();
-          ctx.moveTo(smoothRight[0].x, smoothRight[0].y);
+        // Draw multiple layers for soft glow effect
+        const layers = [
+          { blur: 40, alpha: 0.15, width: 25 },
+          { blur: 25, alpha: 0.25, width: 15 },
+          { blur: 15, alpha: 0.4, width: 8 },
+          { blur: 8, alpha: 0.6, width: 4 },
+          { blur: 3, alpha: 0.8, width: 2 }
+        ];
 
-          for(let i = 1; i < smoothRight.length - 1; i++) {
-            const xc = (smoothRight[i].x + smoothRight[i + 1].x) / 2;
-            const yc = (smoothRight[i].y + smoothRight[i + 1].y) / 2;
-            ctx.quadraticCurveTo(smoothRight[i].x, smoothRight[i].y, xc, yc);
+        layers.forEach(layer => {
+          ctx.shadowColor = "rgba(0, 220, 255, " + layer.alpha + ")";
+          ctx.shadowBlur = layer.blur;
+          ctx.strokeStyle = "rgba(0, 220, 255, " + (layer.alpha * 0.5) + ")";
+          ctx.lineWidth = layer.width;
+
+          drawContour(smoothLeft);
+          drawContour(smoothRight);
+
+          // Connect top
+          if(smoothLeft.length > 0 && smoothRight.length > 0) {
+            ctx.beginPath();
+            ctx.moveTo(smoothLeft[0].x, smoothLeft[0].y);
+            const topCenterX = (smoothLeft[0].x + smoothRight[0].x) / 2;
+            const topCenterY = Math.min(smoothLeft[0].y, smoothRight[0].y) - 10;
+            ctx.quadraticCurveTo(topCenterX, topCenterY, smoothRight[0].x, smoothRight[0].y);
+            ctx.stroke();
           }
-          ctx.stroke();
-        }
-
-        // Connect top (head outline)
-        if(smoothLeft.length > 0 && smoothRight.length > 0) {
-          ctx.beginPath();
-          ctx.moveTo(smoothLeft[0].x, smoothLeft[0].y);
-          const topCenterX = (smoothLeft[0].x + smoothRight[0].x) / 2;
-          const topCenterY = Math.min(smoothLeft[0].y, smoothRight[0].y) - 10;
-          ctx.quadraticCurveTo(topCenterX, topCenterY, smoothRight[0].x, smoothRight[0].y);
-          ctx.stroke();
-        }
+        });
 
         ctx.restore();
       }

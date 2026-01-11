@@ -27,6 +27,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Localization from 'expo-localization';
 import AdBanner from './AdBanner';
 import Torch from 'react-native-torch';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 
 // Constants for configuration
 const CONFIG = {
@@ -871,15 +872,20 @@ export default function App() {
   }, []);
 
   const triggerBadPostureAlert = useCallback(async () => {
+    console.log('=== ALERT TRIGGERED ===');
+    console.log('vibrationEnabled:', vibrationEnabled, 'flashEnabled:', flashEnabled, 'alertEnabled:', alertEnabled);
+
     const newTotalAlerts = totalAlerts + 1;
     setTotalAlerts(newTotalAlerts);
     saveSettings('totalAlerts', newTotalAlerts);
 
     // Vibration alert with intensity and pattern
     if (vibrationEnabled) {
+      console.log('Triggering vibration, pattern:', vibrationPattern, 'intensity:', vibrationIntensity);
       try {
         const patternFn = CONFIG.VIBRATION_PATTERNS[vibrationPattern] || CONFIG.VIBRATION_PATTERNS.double;
         const pattern = patternFn(vibrationIntensity);
+        console.log('Vibration pattern array:', pattern);
         Vibration.vibrate(pattern);
       } catch (error) {
         console.error('Vibration error:', error);
@@ -894,8 +900,9 @@ export default function App() {
 
     // Flashlight (torch) alert with pattern
     if (flashEnabled) {
+      console.log('Triggering flashlight, pattern:', flashPattern);
       try {
-        executeTorchPattern(flashPattern);
+        await executeTorchPattern(flashPattern);
       } catch (error) {
         console.error('Flash error:', error);
       }
@@ -1049,6 +1056,14 @@ export default function App() {
         setIsMonitoring(false);
         setPostureStatus(POSTURE_STATUS.GOOD);
 
+        // Disable keep-awake when stopping
+        try {
+          deactivateKeepAwake();
+          console.log('Keep-awake deactivated');
+        } catch (e) {
+          console.log('Keep-awake deactivate error:', e);
+        }
+
         // Capture session data before resetting
         const sessionDuration = formatTime(sessionTimeRef.current);
         const sessionAlerts = totalAlerts;
@@ -1072,6 +1087,14 @@ export default function App() {
         setBadPostureCount(0);
         setIsMonitoring(true);
         setPostureStatus(POSTURE_STATUS.GOOD);
+
+        // Enable keep-awake to prevent screen from turning off during monitoring
+        try {
+          await activateKeepAwakeAsync();
+          console.log('Keep-awake activated - screen will stay on');
+        } catch (e) {
+          console.log('Keep-awake activate error:', e);
+        }
       }
     } finally {
       // Delay to prevent rapid clicking
