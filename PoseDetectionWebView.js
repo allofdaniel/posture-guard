@@ -1,5 +1,4 @@
 // PoseDetection HTML for WebView - MediaPipe based real pose detection
-// Uses legacy MediaPipe Pose for Android WebView compatibility
 export const POSE_DETECTION_HTML = `
 <!DOCTYPE html>
 <html>
@@ -8,693 +7,549 @@ export const POSE_DETECTION_HTML = `
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      background: #000;
-      overflow: hidden;
-      width: 100vw;
-      height: 100vh;
-    }
-    #container {
-      position: relative;
-      width: 100%;
-      height: 100%;
-    }
-    #video {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-      transform: scaleX(-1);
-    }
-    #canvas {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      pointer-events: none;
-    }
-    #status {
-      position: absolute;
-      top: 10px;
-      left: 50%;
-      transform: translateX(-50%);
-      padding: 8px 16px;
-      border-radius: 20px;
-      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-      font-size: 14px;
-      font-weight: 600;
-      z-index: 100;
-      opacity: 0.9;
-    }
+    body { background: #000; overflow: hidden; width: 100vw; height: 100vh; }
+    #container { position: relative; width: 100%; height: 100%; }
+    #video { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); z-index: 1; }
+    #canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; transform: scaleX(-1); }
+    #status { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); padding: 8px 16px; border-radius: 20px; font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 14px; font-weight: 600; z-index: 100; opacity: 0.9; }
     .loading { background: rgba(255, 255, 255, 0.9); color: #333; }
     .good { background: rgba(16, 185, 129, 0.9); color: white; }
     .warning { background: rgba(245, 158, 11, 0.9); color: white; }
     .bad { background: rgba(239, 68, 68, 0.9); color: white; }
-    #issues {
-      position: absolute;
-      bottom: 60px;
-      left: 50%;
-      transform: translateX(-50%);
-      padding: 6px 12px;
-      border-radius: 15px;
-      background: rgba(0, 0, 0, 0.7);
-      color: white;
-      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-      font-size: 12px;
-      z-index: 100;
-      display: none;
-      text-align: center;
-      max-width: 90%;
-    }
-    #fallback-message {
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      text-align: center;
-      color: white;
-      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-      padding: 20px;
-      display: none;
-    }
-    #fallback-message h3 {
-      font-size: 18px;
-      margin-bottom: 10px;
-    }
-    #fallback-message p {
-      font-size: 14px;
-      opacity: 0.8;
-    }
+    #issues { position: absolute; bottom: 60px; left: 50%; transform: translateX(-50%); padding: 6px 12px; border-radius: 15px; background: rgba(0, 0, 0, 0.7); color: white; font-family: sans-serif; font-size: 12px; z-index: 100; display: none; text-align: center; max-width: 90%; }
+    #fallback-message { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; color: white; padding: 20px; display: none; }
+    #fallback-message h3 { margin-bottom: 10px; font-size: 18px; }
+    #fallback-message p { font-size: 14px; opacity: 0.8; margin-bottom: 8px; }
+    #debug-log { position: absolute; bottom: 10px; left: 10px; right: 10px; max-height: 150px; overflow-y: auto; background: rgba(0, 0, 0, 0.8); color: #0f0; font-family: monospace; font-size: 10px; padding: 5px; border-radius: 5px; z-index: 200; display: none; }
   </style>
 </head>
 <body>
   <div id="container">
     <video id="video" playsinline autoplay muted></video>
     <canvas id="canvas"></canvas>
-    <div id="status" class="loading">Loading AI...</div>
+    <div id="status" class="loading">Loading...</div>
     <div id="issues"></div>
     <div id="fallback-message">
       <h3>📷 Camera Setup</h3>
-      <p>Camera access requires a physical device.<br>Emulator mode: AI monitoring simulation active.</p>
+      <p>Camera access requires a physical device.</p>
+      <p>Emulator mode: AI monitoring simulation active.</p>
     </div>
+    <div id="debug-log"></div>
   </div>
-
-  <!-- Load MediaPipe Pose library (works in Android WebView) -->
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
-
   <script>
     (function() {
-      const LANDMARKS = {
-        NOSE: 0, LEFT_EYE_INNER: 1, LEFT_EYE: 2, LEFT_EYE_OUTER: 3,
-        RIGHT_EYE_INNER: 4, RIGHT_EYE: 5, RIGHT_EYE_OUTER: 6,
-        LEFT_EAR: 7, RIGHT_EAR: 8,
-        LEFT_SHOULDER: 11, RIGHT_SHOULDER: 12, LEFT_ELBOW: 13, RIGHT_ELBOW: 14,
-        LEFT_WRIST: 15, RIGHT_WRIST: 16, LEFT_HIP: 23, RIGHT_HIP: 24
-      };
+      let pose, video, canvas, ctx, calibPose, isMonitoring = false, sens = 1.0, simMode = false;
+      let retryCount = 0;
+      const MAX_RETRIES = 3;
+      const statusEl = document.getElementById("status");
+      const issuesEl = document.getElementById("issues");
+      const fallbackEl = document.getElementById("fallback-message");
+      const debugEl = document.getElementById("debug-log");
 
-      const THRESHOLDS = {
-        SHOULDER_DROP: 0.04,
-        SHOULDER_WIDTH: 0.12,
-        HEAD_DROP: 0.05,
-        HEAD_FORWARD: 0.04,
-        MIN_VISIBILITY: 0.5
-      };
+      // Debug log - disabled for production
+      // debugEl.style.display = 'block';
 
-      const SMOOTHING_FACTOR = 0.6;
-
-      let pose = null;
-      let video = null;
-      let canvas = null;
-      let ctx = null;
-      let smoothedLandmarks = null;
-      let calibratedPose = null;
-      let isMonitoring = false;
-      let sensitivity = 1.0;
-      let isSimulationMode = false;
-      let animationFrameId = null;
-
-      const statusEl = document.getElementById('status');
-      const issuesEl = document.getElementById('issues');
-      const fallbackEl = document.getElementById('fallback-message');
-
-      function sendToReactNative(data) {
+      function sendRN(d) {
         if (window.ReactNativeWebView) {
-          window.ReactNativeWebView.postMessage(JSON.stringify(data));
+          window.ReactNativeWebView.postMessage(JSON.stringify(d));
         }
       }
 
-      function log(msg) {
-        console.log('[PoseDetection]', msg);
-        sendToReactNative({ type: 'log', message: msg });
-      }
-
-      function smoothLandmarks(newLandmarks) {
-        if (!smoothedLandmarks) {
-          smoothedLandmarks = newLandmarks.map(lm => ({ ...lm }));
-          return smoothedLandmarks;
+      function log(m) {
+        console.log(m);
+        sendRN({type:"log", message:m});
+        if(debugEl) {
+          debugEl.innerHTML += m + "<br>";
+          debugEl.scrollTop = debugEl.scrollHeight;
         }
-
-        const smoothed = newLandmarks.map((lm, i) => {
-          const prev = smoothedLandmarks[i];
-          return {
-            x: prev.x * SMOOTHING_FACTOR + lm.x * (1 - SMOOTHING_FACTOR),
-            y: prev.y * SMOOTHING_FACTOR + lm.y * (1 - SMOOTHING_FACTOR),
-            z: prev.z * SMOOTHING_FACTOR + lm.z * (1 - SMOOTHING_FACTOR),
-            visibility: lm.visibility
-          };
-        });
-
-        smoothedLandmarks = smoothed;
-        return smoothed;
       }
 
-      function isValid(lm) {
-        return lm && lm.visibility >= THRESHOLDS.MIN_VISIBILITY;
-      }
+      function isValid(lm) { return lm && lm.visibility >= 0.5; }
 
-      function calibrate(landmarks) {
-        const leftShoulder = landmarks[LANDMARKS.LEFT_SHOULDER];
-        const rightShoulder = landmarks[LANDMARKS.RIGHT_SHOULDER];
-        const nose = landmarks[LANDMARKS.NOSE];
-        const leftEar = landmarks[LANDMARKS.LEFT_EAR];
-        const rightEar = landmarks[LANDMARKS.RIGHT_EAR];
-
-        if (!isValid(leftShoulder) || !isValid(rightShoulder)) {
-          return null;
-        }
-
-        const shoulderCenterY = (leftShoulder.y + rightShoulder.y) / 2;
-        const shoulderWidth = Math.abs(leftShoulder.x - rightShoulder.x);
-        const ear = isValid(leftEar) ? leftEar : isValid(rightEar) ? rightEar : null;
-
+      function calibrate(lm) {
+        const ls = lm[11], rs = lm[12], n = lm[0];
+        if(!isValid(ls) || !isValid(rs)) return null;
         return {
-          shoulderCenterY,
-          shoulderWidth,
-          shoulderTilt: Math.abs(leftShoulder.y - rightShoulder.y),
-          noseY: isValid(nose) ? nose.y : null,
-          earY: ear ? ear.y : null,
-          earShoulderX: ear && leftShoulder ? ear.x - leftShoulder.x : null,
-          earNoseX: ear && isValid(nose) ? ear.x - nose.x : null,
-          noseEarYDiff: isValid(nose) && ear ? nose.y - ear.y : null
+          scY: (ls.y + rs.y) / 2,
+          sw: Math.abs(ls.x - rs.x),
+          nY: isValid(n) ? n.y : null
         };
       }
 
-      function analyzePosture(landmarks, calibrated, sens) {
+      function analyze(lm, cal, s) {
         const issues = [];
-
-        const leftShoulder = landmarks[LANDMARKS.LEFT_SHOULDER];
-        const rightShoulder = landmarks[LANDMARKS.RIGHT_SHOULDER];
-        const nose = landmarks[LANDMARKS.NOSE];
-        const leftEar = landmarks[LANDMARKS.LEFT_EAR];
-        const rightEar = landmarks[LANDMARKS.RIGHT_EAR];
-
-        if (!isValid(leftShoulder) || !isValid(rightShoulder)) {
-          return { status: 'good', issues: [] };
-        }
-
-        const currentShoulderCenterY = (leftShoulder.y + rightShoulder.y) / 2;
-        const currentShoulderWidth = Math.abs(leftShoulder.x - rightShoulder.x);
-
-        // 1. Shoulder drop (slouching)
-        const shoulderYDiff = currentShoulderCenterY - calibrated.shoulderCenterY;
-        if (shoulderYDiff > THRESHOLDS.SHOULDER_DROP * sens) {
-          issues.push('Slouching');
-        }
-
-        // 2. Leaning forward (shoulder width decrease)
-        const widthRatio = currentShoulderWidth / calibrated.shoulderWidth;
-        if (widthRatio < 1 - (THRESHOLDS.SHOULDER_WIDTH * sens)) {
-          issues.push('Leaning Forward');
-        }
-
-        // 3. Head drop
-        if (isValid(nose) && calibrated.noseY !== null) {
-          const headDrop = nose.y - calibrated.noseY;
-          if (headDrop > THRESHOLDS.HEAD_DROP * sens) {
-            issues.push('Head Down');
-          }
-        }
-
-        // 4. Turtle neck
-        const ear = isValid(leftEar) ? leftEar : isValid(rightEar) ? rightEar : null;
-        if (ear && calibrated.earNoseX !== null && isValid(nose)) {
-          const currentEarNoseX = ear.x - nose.x;
-          const xDiff = currentEarNoseX - calibrated.earNoseX;
-          if (Math.abs(xDiff) > THRESHOLDS.HEAD_FORWARD * sens) {
-            issues.push('Turtle Neck');
-          }
-        }
-
-        // 5. Chin resting
-        const leftWrist = landmarks[LANDMARKS.LEFT_WRIST];
-        const rightWrist = landmarks[LANDMARKS.RIGHT_WRIST];
-        if (isValid(nose)) {
-          const chinRestThreshold = 0.12;
-          let chinResting = false;
-
-          if (isValid(leftWrist)) {
-            const dist = Math.sqrt(Math.pow(leftWrist.x - nose.x, 2) + Math.pow(leftWrist.y - nose.y, 2));
-            if (dist < chinRestThreshold) chinResting = true;
-          }
-          if (isValid(rightWrist)) {
-            const dist = Math.sqrt(Math.pow(rightWrist.x - nose.x, 2) + Math.pow(rightWrist.y - nose.y, 2));
-            if (dist < chinRestThreshold) chinResting = true;
-          }
-          if (chinResting) issues.push('Chin Resting');
-        }
-
-        let status = 'good';
-        if (issues.length >= 2) status = 'bad';
-        else if (issues.length === 1) status = 'warning';
-
-        return { status, issues };
+        const ls = lm[11], rs = lm[12], n = lm[0];
+        if(!isValid(ls) || !isValid(rs)) return {status: "good", issues: []};
+        if((ls.y + rs.y) / 2 - cal.scY > 0.04 * s) issues.push("Slouching");
+        if(Math.abs(ls.x - rs.x) / cal.sw < 1 - 0.12 * s) issues.push("Leaning");
+        if(isValid(n) && cal.nY && n.y - cal.nY > 0.05 * s) issues.push("Head Down");
+        return {
+          status: issues.length >= 2 ? "bad" : issues.length === 1 ? "warning" : "good",
+          issues
+        };
       }
 
-      // Connection pairs for drawing skeleton
-      const POSE_CONNECTIONS = [
-        // Torso
-        [LANDMARKS.LEFT_SHOULDER, LANDMARKS.RIGHT_SHOULDER],
-        [LANDMARKS.LEFT_SHOULDER, LANDMARKS.LEFT_HIP],
-        [LANDMARKS.RIGHT_SHOULDER, LANDMARKS.RIGHT_HIP],
-        [LANDMARKS.LEFT_HIP, LANDMARKS.RIGHT_HIP],
-        // Left arm
-        [LANDMARKS.LEFT_SHOULDER, LANDMARKS.LEFT_ELBOW],
-        [LANDMARKS.LEFT_ELBOW, LANDMARKS.LEFT_WRIST],
-        // Right arm
-        [LANDMARKS.RIGHT_SHOULDER, LANDMARKS.RIGHT_ELBOW],
-        [LANDMARKS.RIGHT_ELBOW, LANDMARKS.RIGHT_WRIST],
-        // Face
-        [LANDMARKS.NOSE, LANDMARKS.LEFT_EYE],
-        [LANDMARKS.NOSE, LANDMARKS.RIGHT_EYE],
-        [LANDMARKS.LEFT_EYE, LANDMARKS.LEFT_EAR],
-        [LANDMARKS.RIGHT_EYE, LANDMARKS.RIGHT_EAR],
-      ];
+      function drawPose(lm) {
+        // Sync canvas size with video
+        if(video.videoWidth && video.videoHeight) {
+          if(canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+          }
+        }
 
-      function drawPose(landmarks) {
         ctx.save();
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.translate(canvas.width, 0);
-        ctx.scale(-1, 1);
 
-        const color = 'rgba(99, 102, 241, 0.9)';
-        const fillColor = 'rgba(99, 102, 241, 0.3)';
+        // Color scheme
+        const mainColor = "#00FF00";
+        const fillColor = "rgba(0,255,0,0.15)";
+        const accentColor = "#00DDFF";
+        const jointRadius = 8;
+        const lineWidth = 3;
 
-        // Get key landmarks
-        const leftShoulder = landmarks[LANDMARKS.LEFT_SHOULDER];
-        const rightShoulder = landmarks[LANDMARKS.RIGHT_SHOULDER];
-        const nose = landmarks[LANDMARKS.NOSE];
-        const leftEye = landmarks[LANDMARKS.LEFT_EYE];
-        const rightEye = landmarks[LANDMARKS.RIGHT_EYE];
+        // Landmark references
+        const nose = lm[0], leye = lm[2], reye = lm[5], lear = lm[7], rear = lm[8];
+        const mouth_l = lm[9], mouth_r = lm[10];
+        const ls = lm[11], rs = lm[12]; // Shoulders
+        const le = lm[13], re = lm[14]; // Elbows
+        const lw = lm[15], rw = lm[16]; // Wrists
+        const lh = lm[23], rh = lm[24]; // Hips
 
-        // Calculate positions
-        const toPixel = (lm) => ({
-          x: lm.x * canvas.width,
-          y: lm.y * canvas.height
-        });
+        const px = (l) => ({x: l.x * canvas.width, y: l.y * canvas.height});
 
-        // Draw head (circle)
-        if (isValid(nose)) {
-          const nosePos = toPixel(nose);
-          const headRadius = canvas.width * 0.08;
+        ctx.strokeStyle = mainColor;
+        ctx.fillStyle = mainColor;
+        ctx.lineWidth = lineWidth;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
 
-          // Head circle
+        // ===== DRAW FACE OUTLINE =====
+        const facePoints = [leye, reye, lear, rear, nose, mouth_l, mouth_r].filter(p => isValid(p));
+        if(facePoints.length >= 3) {
+          // Calculate face bounds
+          const facePts = facePoints.map(px);
+          const minX = Math.min(...facePts.map(p => p.x));
+          const maxX = Math.max(...facePts.map(p => p.x));
+          const minY = Math.min(...facePts.map(p => p.y));
+          const maxY = Math.max(...facePts.map(p => p.y));
+
+          // Calculate face center and size
+          const centerX = (minX + maxX) / 2;
+          const centerY = (minY + maxY) / 2;
+          const faceWidth = (maxX - minX) * 1.4;
+          const faceHeight = (maxY - minY) * 1.8;
+
+          // Draw oval face shape
           ctx.beginPath();
-          ctx.arc(nosePos.x, nosePos.y - headRadius * 0.3, headRadius, 0, 2 * Math.PI);
+          ctx.ellipse(centerX, centerY + faceHeight * 0.1, faceWidth / 2, faceHeight / 2, 0, 0, 2 * Math.PI);
           ctx.fillStyle = fillColor;
           ctx.fill();
-          ctx.strokeStyle = color;
+          ctx.strokeStyle = mainColor;
+          ctx.lineWidth = 3;
+          ctx.stroke();
+
+          // Draw eyes
+          if(isValid(leye) && isValid(reye)) {
+            const lep = px(leye), rep = px(reye);
+            ctx.fillStyle = accentColor;
+            ctx.beginPath();
+            ctx.arc(lep.x, lep.y, 5, 0, 2 * Math.PI);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(rep.x, rep.y, 5, 0, 2 * Math.PI);
+            ctx.fill();
+          }
+
+          // Draw ears (important for posture)
+          ctx.fillStyle = mainColor;
+          if(isValid(lear)) {
+            const p = px(lear);
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 6, 0, 2 * Math.PI);
+            ctx.fill();
+          }
+          if(isValid(rear)) {
+            const p = px(rear);
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 6, 0, 2 * Math.PI);
+            ctx.fill();
+          }
+        } else if(isValid(nose)) {
+          // Fallback: simple head circle
+          const np = px(nose);
+          const headRadius = canvas.width * 0.08;
+          ctx.beginPath();
+          ctx.arc(np.x, np.y - headRadius * 0.3, headRadius, 0, 2 * Math.PI);
+          ctx.fillStyle = fillColor;
+          ctx.fill();
+          ctx.strokeStyle = mainColor;
           ctx.lineWidth = 3;
           ctx.stroke();
         }
 
-        // Draw body silhouette
-        if (isValid(leftShoulder) && isValid(rightShoulder)) {
-          const ls = toPixel(leftShoulder);
-          const rs = toPixel(rightShoulder);
-          const shoulderCenterY = (ls.y + rs.y) / 2;
-          const shoulderWidth = Math.abs(ls.x - rs.x);
+        // ===== DRAW BODY =====
+        if(isValid(ls) && isValid(rs)) {
+          const lsp = px(ls), rsp = px(rs);
 
-          // Neck line (nose to shoulder center)
-          if (isValid(nose)) {
-            const nosePos = toPixel(nose);
+          // Draw torso if hips visible
+          if(isValid(lh) && isValid(rh)) {
+            const lhp = px(lh), rhp = px(rh);
+
+            // Fill torso area
             ctx.beginPath();
-            ctx.moveTo(nosePos.x, nosePos.y + canvas.width * 0.05);
-            ctx.lineTo((ls.x + rs.x) / 2, shoulderCenterY);
-            ctx.strokeStyle = color;
-            ctx.lineWidth = shoulderWidth * 0.12;
+            ctx.moveTo(lsp.x, lsp.y);
+            ctx.lineTo(rsp.x, rsp.y);
+            ctx.lineTo(rhp.x, rhp.y);
+            ctx.lineTo(lhp.x, lhp.y);
+            ctx.closePath();
+            ctx.fillStyle = fillColor;
+            ctx.fill();
+            ctx.strokeStyle = mainColor;
+            ctx.lineWidth = lineWidth;
             ctx.stroke();
+
+            // Draw hip points
+            ctx.fillStyle = mainColor;
+            ctx.beginPath();
+            ctx.arc(lhp.x, lhp.y, jointRadius, 0, 2 * Math.PI);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(rhp.x, rhp.y, jointRadius, 0, 2 * Math.PI);
+            ctx.fill();
+
+            // Draw spine (center line)
+            const spineTopX = (lsp.x + rsp.x) / 2;
+            const spineTopY = (lsp.y + rsp.y) / 2;
+            const spineBottomX = (lhp.x + rhp.x) / 2;
+            const spineBottomY = (lhp.y + rhp.y) / 2;
+
+            ctx.beginPath();
+            ctx.setLineDash([8, 4]);
+            ctx.moveTo(spineTopX, spineTopY);
+            ctx.lineTo(spineBottomX, spineBottomY);
+            ctx.strokeStyle = accentColor;
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Connect neck to face
+            if(isValid(nose)) {
+              const np = px(nose);
+              ctx.beginPath();
+              ctx.moveTo(spineTopX, spineTopY);
+              ctx.lineTo(np.x, np.y);
+              ctx.strokeStyle = mainColor;
+              ctx.stroke();
+            }
+          } else {
+            // No hips - just draw shoulder line and neck
+            ctx.beginPath();
+            ctx.moveTo(lsp.x, lsp.y);
+            ctx.lineTo(rsp.x, rsp.y);
+            ctx.strokeStyle = mainColor;
+            ctx.lineWidth = lineWidth;
+            ctx.stroke();
+
+            if(isValid(nose)) {
+              const np = px(nose);
+              const midX = (lsp.x + rsp.x) / 2;
+              const midY = (lsp.y + rsp.y) / 2;
+              ctx.beginPath();
+              ctx.moveTo(midX, midY);
+              ctx.lineTo(np.x, np.y);
+              ctx.stroke();
+            }
           }
 
-          // Torso (body shape)
-          const bodyBottom = Math.min(canvas.height * 0.95, shoulderCenterY + canvas.height * 0.35);
-
+          // Draw shoulder points
+          ctx.fillStyle = mainColor;
           ctx.beginPath();
-          ctx.moveTo(ls.x - shoulderWidth * 0.08, ls.y);
-          ctx.quadraticCurveTo(
-            ls.x - shoulderWidth * 0.15,
-            (ls.y + bodyBottom) / 2,
-            ls.x + shoulderWidth * 0.1,
-            bodyBottom
-          );
-          ctx.lineTo(rs.x - shoulderWidth * 0.1, bodyBottom);
-          ctx.quadraticCurveTo(
-            rs.x + shoulderWidth * 0.15,
-            (rs.y + bodyBottom) / 2,
-            rs.x + shoulderWidth * 0.08,
-            rs.y
-          );
-          ctx.lineTo(ls.x - shoulderWidth * 0.08, ls.y);
-          ctx.closePath();
-
-          ctx.fillStyle = fillColor;
+          ctx.arc(lsp.x, lsp.y, jointRadius + 2, 0, 2 * Math.PI);
           ctx.fill();
-          ctx.strokeStyle = color;
-          ctx.lineWidth = 3;
-          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(rsp.x, rsp.y, jointRadius + 2, 0, 2 * Math.PI);
+          ctx.fill();
 
-          // Draw arms
-          const armWidth = shoulderWidth * 0.08;
-          const leftElbow = landmarks[LANDMARKS.LEFT_ELBOW];
-          const rightElbow = landmarks[LANDMARKS.RIGHT_ELBOW];
-          const leftWrist = landmarks[LANDMARKS.LEFT_WRIST];
-          const rightWrist = landmarks[LANDMARKS.RIGHT_WRIST];
-
+          // ===== DRAW ARMS =====
           // Left arm
-          if (isValid(leftElbow)) {
-            const le = toPixel(leftElbow);
+          if(isValid(le)) {
+            const lep = px(le);
+            ctx.strokeStyle = mainColor;
             ctx.beginPath();
-            ctx.moveTo(ls.x, ls.y);
-            ctx.lineTo(le.x, le.y);
-            ctx.strokeStyle = color;
-            ctx.lineWidth = armWidth;
+            ctx.moveTo(lsp.x, lsp.y);
+            ctx.lineTo(lep.x, lep.y);
             ctx.stroke();
+            ctx.fillStyle = mainColor;
+            ctx.beginPath();
+            ctx.arc(lep.x, lep.y, jointRadius, 0, 2 * Math.PI);
+            ctx.fill();
 
-            if (isValid(leftWrist)) {
-              const lw = toPixel(leftWrist);
+            if(isValid(lw)) {
+              const lwp = px(lw);
               ctx.beginPath();
-              ctx.moveTo(le.x, le.y);
-              ctx.lineTo(lw.x, lw.y);
+              ctx.moveTo(lep.x, lep.y);
+              ctx.lineTo(lwp.x, lwp.y);
               ctx.stroke();
+              ctx.beginPath();
+              ctx.arc(lwp.x, lwp.y, jointRadius - 2, 0, 2 * Math.PI);
+              ctx.fill();
             }
           }
 
           // Right arm
-          if (isValid(rightElbow)) {
-            const re = toPixel(rightElbow);
+          if(isValid(re)) {
+            const rep = px(re);
+            ctx.strokeStyle = mainColor;
             ctx.beginPath();
-            ctx.moveTo(rs.x, rs.y);
-            ctx.lineTo(re.x, re.y);
-            ctx.strokeStyle = color;
-            ctx.lineWidth = armWidth;
+            ctx.moveTo(rsp.x, rsp.y);
+            ctx.lineTo(rep.x, rep.y);
             ctx.stroke();
+            ctx.fillStyle = mainColor;
+            ctx.beginPath();
+            ctx.arc(rep.x, rep.y, jointRadius, 0, 2 * Math.PI);
+            ctx.fill();
 
-            if (isValid(rightWrist)) {
-              const rw = toPixel(rightWrist);
+            if(isValid(rw)) {
+              const rwp = px(rw);
               ctx.beginPath();
-              ctx.moveTo(re.x, re.y);
-              ctx.lineTo(rw.x, rw.y);
+              ctx.moveTo(rep.x, rep.y);
+              ctx.lineTo(rwp.x, rwp.y);
               ctx.stroke();
+              ctx.beginPath();
+              ctx.arc(rwp.x, rwp.y, jointRadius - 2, 0, 2 * Math.PI);
+              ctx.fill();
             }
           }
-
-          // Shoulder joints
-          ctx.fillStyle = color;
-          ctx.beginPath();
-          ctx.arc(ls.x, ls.y, 8, 0, 2 * Math.PI);
-          ctx.fill();
-          ctx.beginPath();
-          ctx.arc(rs.x, rs.y, 8, 0, 2 * Math.PI);
-          ctx.fill();
         }
 
         ctx.restore();
       }
 
-      function onResults(results) {
-        if (results.poseLandmarks && results.poseLandmarks.length > 0) {
-          const landmarks = smoothLandmarks(results.poseLandmarks);
-
-          // Always draw pose skeleton
-          drawPose(landmarks);
-
-          if (isMonitoring) {
-            if (!calibratedPose) {
-              calibratedPose = calibrate(landmarks);
-              if (calibratedPose) {
-                log('Pose calibrated');
-                sendToReactNative({ type: 'calibrated' });
+      function onResults(r) {
+        if(r.poseLandmarks && r.poseLandmarks.length > 0) {
+          const lm = r.poseLandmarks;
+          drawPose(lm);
+          if(isMonitoring) {
+            if(!calibPose) {
+              calibPose = calibrate(lm);
+              if(calibPose) {
+                log("Calibrated successfully");
+                sendRN({type: "calibrated"});
               }
             } else {
-              const result = analyzePosture(landmarks, calibratedPose, sensitivity);
-
-              statusEl.textContent = result.status === 'good' ? 'Good Posture' :
-                                     result.status === 'warning' ? 'Check Posture' : 'Bad Posture';
-              statusEl.className = result.status;
-
-              if (result.issues.length > 0) {
-                issuesEl.textContent = result.issues.join(', ');
-                issuesEl.style.display = 'block';
-              } else {
-                issuesEl.style.display = 'none';
-              }
-
-              sendToReactNative({
-                type: 'posture',
-                status: result.status,
-                issues: result.issues
-              });
+              const res = analyze(lm, calibPose, sens);
+              statusEl.textContent = res.status === "good" ? "Good" : res.status === "warning" ? "Check" : "Bad";
+              statusEl.className = res.status;
+              issuesEl.style.display = res.issues.length > 0 ? "block" : "none";
+              issuesEl.textContent = res.issues.join(", ");
+              sendRN({type: "posture", status: res.status, issues: res.issues});
             }
           } else {
-            statusEl.textContent = 'Ready';
-            statusEl.className = 'good';
-            issuesEl.style.display = 'none';
+            statusEl.textContent = "Ready";
+            statusEl.className = "good";
           }
         } else {
           ctx.clearRect(0, 0, canvas.width, canvas.height);
-          statusEl.textContent = 'Position yourself in frame';
-          statusEl.className = 'loading';
-          issuesEl.style.display = 'none';
+          statusEl.textContent = "Position yourself";
+          statusEl.className = "loading";
         }
       }
 
-      // Simulation mode - generates fake pose data for testing
-      function startSimulationMode() {
-        isSimulationMode = true;
-        fallbackEl.style.display = 'block';
-        statusEl.textContent = 'Simulation Mode';
-        statusEl.className = 'good';
+      function startSim() {
+        simMode = true;
+        fallbackEl.style.display = "block";
+        statusEl.textContent = "Simulation";
+        log("Simulation mode activated");
+        sendRN({type: "ready", simulation: true});
 
-        log('Starting simulation mode (camera not available)');
-        sendToReactNative({ type: 'ready', simulation: true });
-
-        // Generate simulated pose data periodically
-        let frameCount = 0;
-        function simulateFrame() {
-          frameCount++;
-
-          // Create simulated landmarks
-          const time = frameCount / 60;
-          const wobble = Math.sin(time * 2) * 0.02;
-
-          const simulatedLandmarks = [];
-          for (let i = 0; i < 33; i++) {
-            simulatedLandmarks.push({
-              x: 0.5 + (i % 5) * 0.1 - 0.2,
-              y: 0.3 + Math.floor(i / 5) * 0.1 + wobble,
-              z: 0,
-              visibility: 0.9
-            });
+        let fc = 0;
+        (function sf() {
+          fc++;
+          const w = Math.sin(fc / 30) * 0.02;
+          const sl = Array(33).fill(0).map(() => ({x: 0.5, y: 0.5, z: 0, visibility: 0.9}));
+          sl[0] = {x: 0.5, y: 0.15 + w, z: 0, visibility: 0.95};
+          sl[11] = {x: 0.35, y: 0.35 + w, z: 0, visibility: 0.95};
+          sl[12] = {x: 0.65, y: 0.35 + w, z: 0, visibility: 0.95};
+          drawPose(sl);
+          if(isMonitoring && !calibPose) {
+            calibPose = calibrate(sl);
           }
-
-          // Override key landmarks for realistic positions
-          simulatedLandmarks[LANDMARKS.NOSE] = { x: 0.5, y: 0.15 + wobble, z: 0, visibility: 0.95 };
-          simulatedLandmarks[LANDMARKS.LEFT_SHOULDER] = { x: 0.35, y: 0.35 + wobble, z: 0, visibility: 0.95 };
-          simulatedLandmarks[LANDMARKS.RIGHT_SHOULDER] = { x: 0.65, y: 0.35 + wobble, z: 0, visibility: 0.95 };
-          simulatedLandmarks[LANDMARKS.LEFT_EAR] = { x: 0.4, y: 0.12 + wobble, z: 0, visibility: 0.9 };
-          simulatedLandmarks[LANDMARKS.RIGHT_EAR] = { x: 0.6, y: 0.12 + wobble, z: 0, visibility: 0.9 };
-          simulatedLandmarks[LANDMARKS.LEFT_WRIST] = { x: 0.25, y: 0.6 + wobble, z: 0, visibility: 0.85 };
-          simulatedLandmarks[LANDMARKS.RIGHT_WRIST] = { x: 0.75, y: 0.6 + wobble, z: 0, visibility: 0.85 };
-
-          // Draw simulated skeleton
-          drawPose(simulatedLandmarks);
-
-          if (isMonitoring) {
-            const landmarks = smoothLandmarks(simulatedLandmarks);
-
-            if (!calibratedPose) {
-              calibratedPose = calibrate(landmarks);
-              if (calibratedPose) {
-                log('Pose calibrated (simulation)');
-                sendToReactNative({ type: 'calibrated' });
-              }
-            } else {
-              const result = analyzePosture(landmarks, calibratedPose, sensitivity);
-
-              statusEl.textContent = result.status === 'good' ? 'Good Posture' :
-                                     result.status === 'warning' ? 'Check Posture' : 'Bad Posture';
-              statusEl.className = result.status;
-
-              if (result.issues.length > 0) {
-                issuesEl.textContent = result.issues.join(', ');
-                issuesEl.style.display = 'block';
-              } else {
-                issuesEl.style.display = 'none';
-              }
-
-              sendToReactNative({
-                type: 'posture',
-                status: result.status,
-                issues: result.issues
-              });
-            }
-          }
-
-          animationFrameId = requestAnimationFrame(simulateFrame);
-        }
-
-        simulateFrame();
+          requestAnimationFrame(sf);
+        })();
       }
 
-      async function startCamera() {
-        // Check if getUserMedia is available
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-          log('getUserMedia not available, using simulation mode');
-          startSimulationMode();
+      async function tryGetUserMedia(constraints) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia(constraints);
+          return { success: true, stream };
+        } catch (e) {
+          return { success: false, error: e };
+        }
+      }
+
+      async function startCam() {
+        log("=== CAMERA INIT ===");
+        log("Protocol: " + window.location.protocol);
+        log("mediaDevices: " + (navigator.mediaDevices ? "OK" : "NULL"));
+        log("getUserMedia: " + (navigator.mediaDevices?.getUserMedia ? "OK" : "NULL"));
+
+        if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          log("ERROR: getUserMedia not available");
+          startSim();
           return false;
         }
 
+        // Try to enumerate devices first
         try {
-          const stream = await navigator.mediaDevices.getUserMedia({
-            video: {
-              facingMode: 'user',
-              width: { ideal: 640 },
-              height: { ideal: 480 }
+          log("Enumerating devices...");
+          const devs = await navigator.mediaDevices.enumerateDevices();
+          const vd = devs.filter(d => d.kind === "videoinput");
+          log("Found " + vd.length + " camera(s)");
+          vd.forEach((d, i) => log("  [" + i + "] " + (d.label || "Camera " + i)));
+        } catch(e) {
+          log("Enumerate error: " + e.message);
+        }
+
+        // Try multiple constraint configurations
+        const constraintsList = [
+          // Most specific - front camera with resolution
+          { video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } } },
+          // Front camera only
+          { video: { facingMode: "user" } },
+          // Any front camera
+          { video: { facingMode: { ideal: "user" } } },
+          // Just video, no constraints
+          { video: true },
+          // Minimal constraints
+          { video: { width: { min: 320 }, height: { min: 240 } } },
+        ];
+
+        for (let i = 0; i < constraintsList.length; i++) {
+          const constraints = constraintsList[i];
+          log("Trying constraints [" + i + "]: " + JSON.stringify(constraints));
+
+          const result = await tryGetUserMedia(constraints);
+
+          if (result.success) {
+            log("SUCCESS with constraints [" + i + "]");
+            video.srcObject = result.stream;
+
+            try {
+              await video.play();
+              log("Video playing: " + video.videoWidth + "x" + video.videoHeight);
+              canvas.width = video.videoWidth || 640;
+              canvas.height = video.videoHeight || 480;
+              log("=== CAMERA READY ===");
+              return true;
+            } catch (playError) {
+              log("Play error: " + playError.message);
+              result.stream.getTracks().forEach(t => t.stop());
             }
-          });
-
-          video.srcObject = stream;
-          await video.play();
-
-          canvas.width = video.videoWidth || 640;
-          canvas.height = video.videoHeight || 480;
-
-          log('Camera started successfully');
-          return true;
-        } catch (err) {
-          log('Camera error: ' + err.message);
-          startSimulationMode();
-          return false;
-        }
-      }
-
-      async function processVideoFrame() {
-        if (!pose || !video || video.readyState !== 4 || isSimulationMode) return;
-
-        try {
-          await pose.send({ image: video });
-        } catch (err) {
-          console.error('Pose send error:', err);
+          } else {
+            log("Failed [" + i + "]: " + result.error.name + " - " + result.error.message);
+          }
         }
 
-        requestAnimationFrame(processVideoFrame);
+        log("All camera attempts failed");
+
+        // Retry logic
+        if (retryCount < MAX_RETRIES) {
+          retryCount++;
+          log("Retrying... (" + retryCount + "/" + MAX_RETRIES + ")");
+          await new Promise(r => setTimeout(r, 1000));
+          return startCam();
+        }
+
+        startSim();
+        return false;
       }
 
       async function init() {
+        log("Initializing...");
+        video = document.getElementById("video");
+        canvas = document.getElementById("canvas");
+        ctx = canvas.getContext("2d");
+        canvas.width = 640;
+        canvas.height = 480;
+
+        const ok = await startCam();
+        if(!ok) return;
+
+        statusEl.textContent = "Loading AI...";
+
         try {
-          statusEl.textContent = 'Initializing...';
-          log('Starting initialization...');
-
-          video = document.getElementById('video');
-          canvas = document.getElementById('canvas');
-          ctx = canvas.getContext('2d');
-
-          canvas.width = 640;
-          canvas.height = 480;
-
-          // Try to initialize camera first
-          statusEl.textContent = 'Starting Camera...';
-          const cameraStarted = await startCamera();
-
-          if (!cameraStarted) {
-            // Already in simulation mode
-            return;
-          }
-
-          // Initialize MediaPipe Pose only if camera is available
-          statusEl.textContent = 'Loading AI Model...';
-
           pose = new Pose({
-            locateFile: (file) => {
-              return 'https://cdn.jsdelivr.net/npm/@mediapipe/pose/' + file;
-            }
+            locateFile: (f) => "https://cdn.jsdelivr.net/npm/@mediapipe/pose/" + f
           });
 
           pose.setOptions({
-            modelComplexity: 1,
+            modelComplexity: 1, // Full model for better detection
             smoothLandmarks: true,
             enableSegmentation: false,
-            smoothSegmentation: false,
-            minDetectionConfidence: 0.5,
-            minTrackingConfidence: 0.5
+            minDetectionConfidence: 0.3,
+            minTrackingConfidence: 0.3
           });
 
           pose.onResults(onResults);
 
-          log('Pose model initialized');
-          statusEl.textContent = 'Ready';
-          statusEl.className = 'good';
+          // Initialize model
+          await pose.initialize();
 
-          sendToReactNative({ type: 'ready' });
+          statusEl.textContent = "Ready";
+          statusEl.className = "good";
+          sendRN({type: "ready", simulation: false});
 
-          // Start processing video frames
-          requestAnimationFrame(processVideoFrame);
-
-        } catch (err) {
-          log('Init error: ' + err.message);
-
-          // Fall back to simulation mode on any error
-          if (!isSimulationMode) {
-            startSimulationMode();
-          }
-        }
-      }
-
-      // Handle messages from React Native
-      function handleMessage(event) {
-        try {
-          const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
-
-          if (data.type === 'startMonitoring') {
-            isMonitoring = true;
-            calibratedPose = null;
-            smoothedLandmarks = null;
-            sensitivity = data.sensitivity || 1.0;
-            log('Monitoring started, sensitivity: ' + sensitivity);
-            sendToReactNative({ type: 'started' });
-          } else if (data.type === 'stopMonitoring') {
-            isMonitoring = false;
-            calibratedPose = null;
-            log('Monitoring stopped');
-            sendToReactNative({ type: 'stopped' });
-          } else if (data.type === 'setSensitivity') {
-            sensitivity = data.value || 1.0;
-          }
+          let poseReady = true;
+          // Start pose detection loop
+          (function pf() {
+            if(pose && video && video.readyState === 4 && !simMode && poseReady) {
+              poseReady = false;
+              pose.send({image: video}).then(() => {
+                poseReady = true;
+              }).catch((e) => {
+                log("Pose send error: " + e.message);
+                poseReady = true;
+              });
+            }
+            requestAnimationFrame(pf);
+          })();
         } catch (e) {
-          log('Message parse error: ' + e.message);
+          log("AI load error: " + e.message);
+          startSim();
         }
       }
 
-      window.addEventListener('message', handleMessage);
-      document.addEventListener('message', handleMessage);
+      function handleMsg(e) {
+        try {
+          const d = typeof e.data === "string" ? JSON.parse(e.data) : e.data;
+          if(d.type === "startMonitoring") {
+            isMonitoring = true;
+            calibPose = null;
+            sens = d.sensitivity || 1.0;
+            log("Monitoring started, sensitivity: " + sens);
+            sendRN({type: "started"});
+          } else if(d.type === "stopMonitoring") {
+            isMonitoring = false;
+            calibPose = null;
+            log("Monitoring stopped");
+            sendRN({type: "stopped"});
+          } else if(d.type === "setSensitivity") {
+            sens = d.value || 1.0;
+            log("Sensitivity updated: " + sens);
+          }
+        } catch(ex) {
+          log("Message parse error: " + ex.message);
+        }
+      }
 
-      // Start initialization when DOM is ready
-      if (document.readyState === 'complete') {
+      window.addEventListener("message", handleMsg);
+      document.addEventListener("message", handleMsg);
+
+      if(document.readyState === "complete") {
         init();
       } else {
-        window.addEventListener('load', init);
+        window.addEventListener("load", init);
       }
     })();
   </script>
