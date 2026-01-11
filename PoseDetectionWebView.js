@@ -99,93 +99,117 @@ export const POSE_DETECTION_HTML = `
         const w = mask.width, h = mask.height;
         const cw = canvas.width, ch = canvas.height;
 
-        // Create offscreen canvas for edge detection
+        // Create offscreen canvas for processing
         const offCanvas = document.createElement('canvas');
         offCanvas.width = w;
         offCanvas.height = h;
         const offCtx = offCanvas.getContext('2d');
 
-        // Draw mask to offscreen canvas
+        // Draw mask
         offCtx.drawImage(mask, 0, 0);
         const imgData = offCtx.getImageData(0, 0, w, h);
         const data = imgData.data;
 
-        // Create binary mask and detect edges
-        const edgeData = new Uint8ClampedArray(w * h);
-        const threshold = 128;
+        // Create binary mask with blur for smoother edges
+        const binaryMask = new Uint8Array(w * h);
+        const threshold = 100;
 
-        // First pass: create binary mask
         for(let i = 0; i < data.length; i += 4) {
-          edgeData[i / 4] = data[i] > threshold ? 255 : 0;
+          binaryMask[i / 4] = data[i] > threshold ? 1 : 0;
         }
 
-        // Second pass: edge detection (simple Sobel-like)
-        const edges = [];
-        for(let y = 1; y < h - 1; y++) {
-          for(let x = 1; x < w - 1; x++) {
-            const idx = y * w + x;
-            const current = edgeData[idx];
+        // Extract contour points by scanning rows
+        const contourLeft = [];
+        const contourRight = [];
 
-            // Check neighbors
-            const top = edgeData[(y-1) * w + x];
-            const bottom = edgeData[(y+1) * w + x];
-            const left = edgeData[y * w + (x-1)];
-            const right = edgeData[y * w + (x+1)];
+        for(let y = 0; y < h; y += 2) { // Sample every 2 rows
+          let leftEdge = -1, rightEdge = -1;
 
-            // Edge if current is body and any neighbor is not
-            if(current === 255 && (top === 0 || bottom === 0 || left === 0 || right === 0)) {
-              edges.push({x: x * cw / w, y: y * ch / h});
+          // Find leftmost edge
+          for(let x = 0; x < w; x++) {
+            if(binaryMask[y * w + x] === 1) {
+              leftEdge = x;
+              break;
             }
           }
+
+          // Find rightmost edge
+          for(let x = w - 1; x >= 0; x--) {
+            if(binaryMask[y * w + x] === 1) {
+              rightEdge = x;
+              break;
+            }
+          }
+
+          if(leftEdge >= 0) contourLeft.push({x: leftEdge * cw / w, y: y * ch / h});
+          if(rightEdge >= 0) contourRight.push({x: rightEdge * cw / w, y: y * ch / h});
         }
 
-        if(edges.length < 10) return;
+        if(contourLeft.length < 5) return;
 
-        // Draw edge points as smooth outline
+        // Smooth the contour points
+        function smoothPoints(pts, window = 3) {
+          const result = [];
+          for(let i = 0; i < pts.length; i++) {
+            let sumX = 0, sumY = 0, count = 0;
+            for(let j = Math.max(0, i - window); j <= Math.min(pts.length - 1, i + window); j++) {
+              sumX += pts[j].x;
+              sumY += pts[j].y;
+              count++;
+            }
+            result.push({x: sumX / count, y: sumY / count});
+          }
+          return result;
+        }
+
+        const smoothLeft = smoothPoints(contourLeft, 4);
+        const smoothRight = smoothPoints(contourRight, 4);
+
+        // Draw smooth outline
         ctx.save();
 
-        // Glow effect
+        // Glow settings
         ctx.shadowColor = "rgba(0, 220, 255, 1)";
-        ctx.shadowBlur = 15;
-        ctx.strokeStyle = "rgba(0, 220, 255, 0.9)";
-        ctx.fillStyle = "rgba(0, 220, 255, 0.03)";
-        ctx.lineWidth = 2;
+        ctx.shadowBlur = 20;
+        ctx.strokeStyle = "rgba(0, 220, 255, 0.95)";
+        ctx.lineWidth = 3;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
 
-        // Draw outline using edge points
-        ctx.beginPath();
-
-        // Sort edges by angle from center for smooth outline
-        const centerX = edges.reduce((s, p) => s + p.x, 0) / edges.length;
-        const centerY = edges.reduce((s, p) => s + p.y, 0) / edges.length;
-
-        // Sample edges to reduce density
-        const step = Math.max(1, Math.floor(edges.length / 200));
-        const sampledEdges = edges.filter((_, i) => i % step === 0);
-
-        // Draw as dots/small circles for smooth outline effect
-        sampledEdges.forEach(p => {
+        // Draw left contour with bezier curves
+        if(smoothLeft.length > 2) {
           ctx.beginPath();
-          ctx.arc(p.x, p.y, 1.5, 0, 2 * Math.PI);
-          ctx.fill();
-        });
+          ctx.moveTo(smoothLeft[0].x, smoothLeft[0].y);
 
-        // Also draw connecting lines for smoother appearance
-        ctx.globalAlpha = 0.6;
-        ctx.lineWidth = 1.5;
-
-        // Group nearby points and draw lines
-        for(let i = 0; i < sampledEdges.length; i++) {
-          const p1 = sampledEdges[i];
-          for(let j = i + 1; j < sampledEdges.length; j++) {
-            const p2 = sampledEdges[j];
-            const dist = Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
-            if(dist < 15) { // Connect nearby points
-              ctx.beginPath();
-              ctx.moveTo(p1.x, p1.y);
-              ctx.lineTo(p2.x, p2.y);
-              ctx.stroke();
-            }
+          for(let i = 1; i < smoothLeft.length - 1; i++) {
+            const xc = (smoothLeft[i].x + smoothLeft[i + 1].x) / 2;
+            const yc = (smoothLeft[i].y + smoothLeft[i + 1].y) / 2;
+            ctx.quadraticCurveTo(smoothLeft[i].x, smoothLeft[i].y, xc, yc);
           }
+          ctx.stroke();
+        }
+
+        // Draw right contour with bezier curves
+        if(smoothRight.length > 2) {
+          ctx.beginPath();
+          ctx.moveTo(smoothRight[0].x, smoothRight[0].y);
+
+          for(let i = 1; i < smoothRight.length - 1; i++) {
+            const xc = (smoothRight[i].x + smoothRight[i + 1].x) / 2;
+            const yc = (smoothRight[i].y + smoothRight[i + 1].y) / 2;
+            ctx.quadraticCurveTo(smoothRight[i].x, smoothRight[i].y, xc, yc);
+          }
+          ctx.stroke();
+        }
+
+        // Connect top (head outline)
+        if(smoothLeft.length > 0 && smoothRight.length > 0) {
+          ctx.beginPath();
+          ctx.moveTo(smoothLeft[0].x, smoothLeft[0].y);
+          const topCenterX = (smoothLeft[0].x + smoothRight[0].x) / 2;
+          const topCenterY = Math.min(smoothLeft[0].y, smoothRight[0].y) - 10;
+          ctx.quadraticCurveTo(topCenterX, topCenterY, smoothRight[0].x, smoothRight[0].y);
+          ctx.stroke();
         }
 
         ctx.restore();
