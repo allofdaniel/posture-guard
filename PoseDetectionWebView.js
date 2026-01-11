@@ -90,7 +90,108 @@ export const POSE_DETECTION_HTML = `
         };
       }
 
-      function drawPose(lm) {
+      // Segmentation mask storage
+      let segMask = null;
+
+      function drawBodyOutline(mask) {
+        if(!mask) return;
+
+        const w = mask.width, h = mask.height;
+        const cw = canvas.width, ch = canvas.height;
+
+        // Create offscreen canvas for edge detection
+        const offCanvas = document.createElement('canvas');
+        offCanvas.width = w;
+        offCanvas.height = h;
+        const offCtx = offCanvas.getContext('2d');
+
+        // Draw mask to offscreen canvas
+        offCtx.drawImage(mask, 0, 0);
+        const imgData = offCtx.getImageData(0, 0, w, h);
+        const data = imgData.data;
+
+        // Create binary mask and detect edges
+        const edgeData = new Uint8ClampedArray(w * h);
+        const threshold = 128;
+
+        // First pass: create binary mask
+        for(let i = 0; i < data.length; i += 4) {
+          edgeData[i / 4] = data[i] > threshold ? 255 : 0;
+        }
+
+        // Second pass: edge detection (simple Sobel-like)
+        const edges = [];
+        for(let y = 1; y < h - 1; y++) {
+          for(let x = 1; x < w - 1; x++) {
+            const idx = y * w + x;
+            const current = edgeData[idx];
+
+            // Check neighbors
+            const top = edgeData[(y-1) * w + x];
+            const bottom = edgeData[(y+1) * w + x];
+            const left = edgeData[y * w + (x-1)];
+            const right = edgeData[y * w + (x+1)];
+
+            // Edge if current is body and any neighbor is not
+            if(current === 255 && (top === 0 || bottom === 0 || left === 0 || right === 0)) {
+              edges.push({x: x * cw / w, y: y * ch / h});
+            }
+          }
+        }
+
+        if(edges.length < 10) return;
+
+        // Draw edge points as smooth outline
+        ctx.save();
+
+        // Glow effect
+        ctx.shadowColor = "rgba(0, 220, 255, 1)";
+        ctx.shadowBlur = 15;
+        ctx.strokeStyle = "rgba(0, 220, 255, 0.9)";
+        ctx.fillStyle = "rgba(0, 220, 255, 0.03)";
+        ctx.lineWidth = 2;
+
+        // Draw outline using edge points
+        ctx.beginPath();
+
+        // Sort edges by angle from center for smooth outline
+        const centerX = edges.reduce((s, p) => s + p.x, 0) / edges.length;
+        const centerY = edges.reduce((s, p) => s + p.y, 0) / edges.length;
+
+        // Sample edges to reduce density
+        const step = Math.max(1, Math.floor(edges.length / 200));
+        const sampledEdges = edges.filter((_, i) => i % step === 0);
+
+        // Draw as dots/small circles for smooth outline effect
+        sampledEdges.forEach(p => {
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 1.5, 0, 2 * Math.PI);
+          ctx.fill();
+        });
+
+        // Also draw connecting lines for smoother appearance
+        ctx.globalAlpha = 0.6;
+        ctx.lineWidth = 1.5;
+
+        // Group nearby points and draw lines
+        for(let i = 0; i < sampledEdges.length; i++) {
+          const p1 = sampledEdges[i];
+          for(let j = i + 1; j < sampledEdges.length; j++) {
+            const p2 = sampledEdges[j];
+            const dist = Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
+            if(dist < 15) { // Connect nearby points
+              ctx.beginPath();
+              ctx.moveTo(p1.x, p1.y);
+              ctx.lineTo(p2.x, p2.y);
+              ctx.stroke();
+            }
+          }
+        }
+
+        ctx.restore();
+      }
+
+      function drawPose(lm, mask) {
         // Sync canvas size with video
         if(video.videoWidth && video.videoHeight) {
           if(canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
@@ -99,215 +200,19 @@ export const POSE_DETECTION_HTML = `
           }
         }
 
-        ctx.save();
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-        // Modern color scheme - soft cyan glow
-        const glowColor = "rgba(0, 220, 255, 0.8)";
-        const fillColor = "rgba(0, 220, 255, 0.08)";
-        const lineWidth = 2.5;
-
-        // Landmark references
-        const nose = lm[0], leye_in = lm[1], leye = lm[2], leye_out = lm[3];
-        const reye_in = lm[4], reye = lm[5], reye_out = lm[6];
-        const lear = lm[7], rear = lm[8];
-        const mouth_l = lm[9], mouth_r = lm[10];
-        const ls = lm[11], rs = lm[12]; // Shoulders
-        const le = lm[13], re = lm[14]; // Elbows
-        const lw = lm[15], rw = lm[16]; // Wrists
-        const lh = lm[23], rh = lm[24]; // Hips
-
-        const px = (l) => l ? {x: l.x * canvas.width, y: l.y * canvas.height, v: l.visibility} : null;
-
-        // Helper: smooth curve through points
-        function smoothCurve(points, closed = false) {
-          if(points.length < 2) return;
-          ctx.beginPath();
-          ctx.moveTo(points[0].x, points[0].y);
-
-          if(points.length === 2) {
-            ctx.lineTo(points[1].x, points[1].y);
-          } else {
-            for(let i = 0; i < points.length - 1; i++) {
-              const p0 = points[i === 0 ? i : i - 1];
-              const p1 = points[i];
-              const p2 = points[i + 1];
-              const p3 = points[i + 2 < points.length ? i + 2 : i + 1];
-
-              const cp1x = p1.x + (p2.x - p0.x) / 6;
-              const cp1y = p1.y + (p2.y - p0.y) / 6;
-              const cp2x = p2.x - (p3.x - p1.x) / 6;
-              const cp2y = p2.y - (p3.y - p1.y) / 6;
-
-              ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
-            }
-          }
-          if(closed) ctx.closePath();
+        // Draw body outline from segmentation mask
+        if(mask) {
+          drawBodyOutline(mask);
         }
-
-        // Set glow effect
-        ctx.shadowColor = glowColor;
-        ctx.shadowBlur = 12;
-        ctx.strokeStyle = glowColor;
-        ctx.fillStyle = fillColor;
-        ctx.lineWidth = lineWidth;
-        ctx.lineCap = "round";
-        ctx.lineJoin = "round";
-
-        // ===== DRAW FACE SILHOUETTE =====
-        const faceValid = isValid(nose) && (isValid(leye) || isValid(reye));
-        if(faceValid) {
-          const np = px(nose);
-          const lep = isValid(leye) ? px(leye) : null;
-          const rep = isValid(reye) ? px(reye) : null;
-          const leap = isValid(lear) ? px(lear) : null;
-          const reap = isValid(rear) ? px(rear) : null;
-
-          // Calculate face center and dimensions
-          let centerX = np.x;
-          let eyeY = np.y;
-          if(lep && rep) {
-            centerX = (lep.x + rep.x) / 2;
-            eyeY = (lep.y + rep.y) / 2;
-          }
-
-          // Estimate face dimensions
-          let faceWidth = canvas.width * 0.15;
-          if(lep && rep) faceWidth = Math.abs(rep.x - lep.x) * 2.2;
-          else if(leap && reap) faceWidth = Math.abs(reap.x - leap.x) * 1.1;
-
-          const faceHeight = faceWidth * 1.35;
-          const faceCenterY = eyeY + faceHeight * 0.15;
-
-          // Draw elegant face oval
-          ctx.beginPath();
-          ctx.ellipse(centerX, faceCenterY, faceWidth / 2, faceHeight / 2, 0, 0, 2 * Math.PI);
-          ctx.fill();
-          ctx.stroke();
-        }
-
-        // ===== DRAW BODY SILHOUETTE =====
-        if(isValid(ls) && isValid(rs)) {
-          const lsp = px(ls), rsp = px(rs);
-          const lep = isValid(le) ? px(le) : null;
-          const rep = isValid(re) ? px(re) : null;
-          const lwp = isValid(lw) ? px(lw) : null;
-          const rwp = isValid(rw) ? px(rw) : null;
-          const lhp = isValid(lh) ? px(lh) : null;
-          const rhp = isValid(rh) ? px(rh) : null;
-          const np = isValid(nose) ? px(nose) : null;
-
-          // Calculate neck position
-          const neckX = (lsp.x + rsp.x) / 2;
-          const neckY = (lsp.y + rsp.y) / 2 - (rsp.x - lsp.x) * 0.15;
-
-          // Draw connected body outline as smooth silhouette
-          ctx.beginPath();
-
-          // Start from left side, go clockwise
-          // Left arm (if visible)
-          if(lwp) {
-            ctx.moveTo(lwp.x, lwp.y);
-            if(lep) {
-              ctx.quadraticCurveTo(lep.x - 10, lep.y, lsp.x, lsp.y);
-            } else {
-              ctx.lineTo(lsp.x, lsp.y);
-            }
-          } else if(lep) {
-            ctx.moveTo(lep.x, lep.y);
-            ctx.lineTo(lsp.x, lsp.y);
-          } else {
-            ctx.moveTo(lsp.x, lsp.y);
-          }
-
-          // Neck curve
-          ctx.quadraticCurveTo(lsp.x + (neckX - lsp.x) * 0.3, neckY + 5, neckX, neckY);
-          ctx.quadraticCurveTo(rsp.x - (rsp.x - neckX) * 0.3, neckY + 5, rsp.x, rsp.y);
-
-          // Right arm (if visible)
-          if(rep) {
-            ctx.lineTo(rep.x, rep.y);
-            if(rwp) {
-              ctx.lineTo(rwp.x, rwp.y);
-            }
-          }
-
-          ctx.stroke();
-
-          // Draw torso separately if hips visible
-          if(lhp && rhp) {
-            // Torso outline with curves
-            ctx.beginPath();
-            ctx.moveTo(lsp.x, lsp.y);
-
-            // Left side - curve from shoulder to hip
-            const leftMidX = lsp.x - (lsp.x - lhp.x) * 0.1;
-            const leftMidY = (lsp.y + lhp.y) / 2;
-            ctx.quadraticCurveTo(leftMidX, leftMidY, lhp.x, lhp.y);
-
-            // Bottom - hip to hip
-            ctx.lineTo(rhp.x, rhp.y);
-
-            // Right side - curve from hip to shoulder
-            const rightMidX = rsp.x + (rsp.x - rhp.x) * 0.1;
-            const rightMidY = (rsp.y + rhp.y) / 2;
-            ctx.quadraticCurveTo(rightMidX, rightMidY, rsp.x, rsp.y);
-
-            ctx.closePath();
-            ctx.fill();
-            ctx.stroke();
-
-            // Center line (posture reference) - subtle
-            ctx.save();
-            ctx.shadowBlur = 6;
-            ctx.globalAlpha = 0.5;
-            ctx.setLineDash([6, 6]);
-            ctx.beginPath();
-            const spineTop = {x: neckX, y: neckY};
-            const spineBottom = {x: (lhp.x + rhp.x) / 2, y: (lhp.y + rhp.y) / 2};
-            ctx.moveTo(spineTop.x, spineTop.y);
-            ctx.lineTo(spineBottom.x, spineBottom.y);
-            ctx.stroke();
-            ctx.setLineDash([]);
-            ctx.restore();
-          } else {
-            // Just shoulder line with neck
-            ctx.beginPath();
-            ctx.moveTo(lsp.x, lsp.y);
-            ctx.quadraticCurveTo(neckX, neckY, rsp.x, rsp.y);
-            ctx.stroke();
-          }
-
-          // Draw neck to head connection
-          if(np) {
-            ctx.beginPath();
-            ctx.moveTo(neckX, neckY);
-            ctx.lineTo(np.x, np.y + canvas.height * 0.03);
-            ctx.stroke();
-          }
-
-          // Small elegant joint indicators (optional, minimal)
-          const jointSize = 4;
-          ctx.shadowBlur = 8;
-
-          // Shoulders only - subtle dots
-          [lsp, rsp].forEach(p => {
-            if(p) {
-              ctx.beginPath();
-              ctx.arc(p.x, p.y, jointSize, 0, 2 * Math.PI);
-              ctx.fillStyle = glowColor;
-              ctx.fill();
-            }
-          });
-        }
-
-        ctx.restore();
       }
 
       function onResults(r) {
         if(r.poseLandmarks && r.poseLandmarks.length > 0) {
           const lm = r.poseLandmarks;
-          drawPose(lm);
+          const mask = r.segmentationMask || null;
+          drawPose(lm, mask);
           if(isMonitoring) {
             if(!calibPose) {
               calibPose = calibrate(lm);
@@ -462,9 +367,10 @@ export const POSE_DETECTION_HTML = `
           });
 
           pose.setOptions({
-            modelComplexity: 1, // Full model for better detection
+            modelComplexity: 1,
             smoothLandmarks: true,
-            enableSegmentation: false,
+            enableSegmentation: true,
+            smoothSegmentation: true,
             minDetectionConfidence: 0.3,
             minTrackingConfidence: 0.3
           });
