@@ -102,225 +102,203 @@ export const POSE_DETECTION_HTML = `
         ctx.save();
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-        // Color scheme
-        const mainColor = "#00FF00";
-        const fillColor = "rgba(0,255,0,0.15)";
-        const accentColor = "#00DDFF";
-        const jointRadius = 8;
-        const lineWidth = 3;
+        // Modern color scheme - soft cyan glow
+        const glowColor = "rgba(0, 220, 255, 0.8)";
+        const fillColor = "rgba(0, 220, 255, 0.08)";
+        const lineWidth = 2.5;
 
         // Landmark references
-        const nose = lm[0], leye = lm[2], reye = lm[5], lear = lm[7], rear = lm[8];
+        const nose = lm[0], leye_in = lm[1], leye = lm[2], leye_out = lm[3];
+        const reye_in = lm[4], reye = lm[5], reye_out = lm[6];
+        const lear = lm[7], rear = lm[8];
         const mouth_l = lm[9], mouth_r = lm[10];
         const ls = lm[11], rs = lm[12]; // Shoulders
         const le = lm[13], re = lm[14]; // Elbows
         const lw = lm[15], rw = lm[16]; // Wrists
         const lh = lm[23], rh = lm[24]; // Hips
 
-        const px = (l) => ({x: l.x * canvas.width, y: l.y * canvas.height});
+        const px = (l) => l ? {x: l.x * canvas.width, y: l.y * canvas.height, v: l.visibility} : null;
 
-        ctx.strokeStyle = mainColor;
-        ctx.fillStyle = mainColor;
+        // Helper: smooth curve through points
+        function smoothCurve(points, closed = false) {
+          if(points.length < 2) return;
+          ctx.beginPath();
+          ctx.moveTo(points[0].x, points[0].y);
+
+          if(points.length === 2) {
+            ctx.lineTo(points[1].x, points[1].y);
+          } else {
+            for(let i = 0; i < points.length - 1; i++) {
+              const p0 = points[i === 0 ? i : i - 1];
+              const p1 = points[i];
+              const p2 = points[i + 1];
+              const p3 = points[i + 2 < points.length ? i + 2 : i + 1];
+
+              const cp1x = p1.x + (p2.x - p0.x) / 6;
+              const cp1y = p1.y + (p2.y - p0.y) / 6;
+              const cp2x = p2.x - (p3.x - p1.x) / 6;
+              const cp2y = p2.y - (p3.y - p1.y) / 6;
+
+              ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
+            }
+          }
+          if(closed) ctx.closePath();
+        }
+
+        // Set glow effect
+        ctx.shadowColor = glowColor;
+        ctx.shadowBlur = 12;
+        ctx.strokeStyle = glowColor;
+        ctx.fillStyle = fillColor;
         ctx.lineWidth = lineWidth;
         ctx.lineCap = "round";
         ctx.lineJoin = "round";
 
-        // ===== DRAW FACE OUTLINE =====
-        const facePoints = [leye, reye, lear, rear, nose, mouth_l, mouth_r].filter(p => isValid(p));
-        if(facePoints.length >= 3) {
-          // Calculate face bounds
-          const facePts = facePoints.map(px);
-          const minX = Math.min(...facePts.map(p => p.x));
-          const maxX = Math.max(...facePts.map(p => p.x));
-          const minY = Math.min(...facePts.map(p => p.y));
-          const maxY = Math.max(...facePts.map(p => p.y));
-
-          // Calculate face center and size
-          const centerX = (minX + maxX) / 2;
-          const centerY = (minY + maxY) / 2;
-          const faceWidth = (maxX - minX) * 1.4;
-          const faceHeight = (maxY - minY) * 1.8;
-
-          // Draw oval face shape
-          ctx.beginPath();
-          ctx.ellipse(centerX, centerY + faceHeight * 0.1, faceWidth / 2, faceHeight / 2, 0, 0, 2 * Math.PI);
-          ctx.fillStyle = fillColor;
-          ctx.fill();
-          ctx.strokeStyle = mainColor;
-          ctx.lineWidth = 3;
-          ctx.stroke();
-
-          // Draw eyes
-          if(isValid(leye) && isValid(reye)) {
-            const lep = px(leye), rep = px(reye);
-            ctx.fillStyle = accentColor;
-            ctx.beginPath();
-            ctx.arc(lep.x, lep.y, 5, 0, 2 * Math.PI);
-            ctx.fill();
-            ctx.beginPath();
-            ctx.arc(rep.x, rep.y, 5, 0, 2 * Math.PI);
-            ctx.fill();
-          }
-
-          // Draw ears (important for posture)
-          ctx.fillStyle = mainColor;
-          if(isValid(lear)) {
-            const p = px(lear);
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, 6, 0, 2 * Math.PI);
-            ctx.fill();
-          }
-          if(isValid(rear)) {
-            const p = px(rear);
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, 6, 0, 2 * Math.PI);
-            ctx.fill();
-          }
-        } else if(isValid(nose)) {
-          // Fallback: simple head circle
+        // ===== DRAW FACE SILHOUETTE =====
+        const faceValid = isValid(nose) && (isValid(leye) || isValid(reye));
+        if(faceValid) {
           const np = px(nose);
-          const headRadius = canvas.width * 0.08;
+          const lep = isValid(leye) ? px(leye) : null;
+          const rep = isValid(reye) ? px(reye) : null;
+          const leap = isValid(lear) ? px(lear) : null;
+          const reap = isValid(rear) ? px(rear) : null;
+
+          // Calculate face center and dimensions
+          let centerX = np.x;
+          let eyeY = np.y;
+          if(lep && rep) {
+            centerX = (lep.x + rep.x) / 2;
+            eyeY = (lep.y + rep.y) / 2;
+          }
+
+          // Estimate face dimensions
+          let faceWidth = canvas.width * 0.15;
+          if(lep && rep) faceWidth = Math.abs(rep.x - lep.x) * 2.2;
+          else if(leap && reap) faceWidth = Math.abs(reap.x - leap.x) * 1.1;
+
+          const faceHeight = faceWidth * 1.35;
+          const faceCenterY = eyeY + faceHeight * 0.15;
+
+          // Draw elegant face oval
           ctx.beginPath();
-          ctx.arc(np.x, np.y - headRadius * 0.3, headRadius, 0, 2 * Math.PI);
-          ctx.fillStyle = fillColor;
+          ctx.ellipse(centerX, faceCenterY, faceWidth / 2, faceHeight / 2, 0, 0, 2 * Math.PI);
           ctx.fill();
-          ctx.strokeStyle = mainColor;
-          ctx.lineWidth = 3;
           ctx.stroke();
         }
 
-        // ===== DRAW BODY =====
+        // ===== DRAW BODY SILHOUETTE =====
         if(isValid(ls) && isValid(rs)) {
           const lsp = px(ls), rsp = px(rs);
+          const lep = isValid(le) ? px(le) : null;
+          const rep = isValid(re) ? px(re) : null;
+          const lwp = isValid(lw) ? px(lw) : null;
+          const rwp = isValid(rw) ? px(rw) : null;
+          const lhp = isValid(lh) ? px(lh) : null;
+          const rhp = isValid(rh) ? px(rh) : null;
+          const np = isValid(nose) ? px(nose) : null;
 
-          // Draw torso if hips visible
-          if(isValid(lh) && isValid(rh)) {
-            const lhp = px(lh), rhp = px(rh);
+          // Calculate neck position
+          const neckX = (lsp.x + rsp.x) / 2;
+          const neckY = (lsp.y + rsp.y) / 2 - (rsp.x - lsp.x) * 0.15;
 
-            // Fill torso area
+          // Draw connected body outline as smooth silhouette
+          ctx.beginPath();
+
+          // Start from left side, go clockwise
+          // Left arm (if visible)
+          if(lwp) {
+            ctx.moveTo(lwp.x, lwp.y);
+            if(lep) {
+              ctx.quadraticCurveTo(lep.x - 10, lep.y, lsp.x, lsp.y);
+            } else {
+              ctx.lineTo(lsp.x, lsp.y);
+            }
+          } else if(lep) {
+            ctx.moveTo(lep.x, lep.y);
+            ctx.lineTo(lsp.x, lsp.y);
+          } else {
+            ctx.moveTo(lsp.x, lsp.y);
+          }
+
+          // Neck curve
+          ctx.quadraticCurveTo(lsp.x + (neckX - lsp.x) * 0.3, neckY + 5, neckX, neckY);
+          ctx.quadraticCurveTo(rsp.x - (rsp.x - neckX) * 0.3, neckY + 5, rsp.x, rsp.y);
+
+          // Right arm (if visible)
+          if(rep) {
+            ctx.lineTo(rep.x, rep.y);
+            if(rwp) {
+              ctx.lineTo(rwp.x, rwp.y);
+            }
+          }
+
+          ctx.stroke();
+
+          // Draw torso separately if hips visible
+          if(lhp && rhp) {
+            // Torso outline with curves
             ctx.beginPath();
             ctx.moveTo(lsp.x, lsp.y);
-            ctx.lineTo(rsp.x, rsp.y);
+
+            // Left side - curve from shoulder to hip
+            const leftMidX = lsp.x - (lsp.x - lhp.x) * 0.1;
+            const leftMidY = (lsp.y + lhp.y) / 2;
+            ctx.quadraticCurveTo(leftMidX, leftMidY, lhp.x, lhp.y);
+
+            // Bottom - hip to hip
             ctx.lineTo(rhp.x, rhp.y);
-            ctx.lineTo(lhp.x, lhp.y);
+
+            // Right side - curve from hip to shoulder
+            const rightMidX = rsp.x + (rsp.x - rhp.x) * 0.1;
+            const rightMidY = (rsp.y + rhp.y) / 2;
+            ctx.quadraticCurveTo(rightMidX, rightMidY, rsp.x, rsp.y);
+
             ctx.closePath();
-            ctx.fillStyle = fillColor;
             ctx.fill();
-            ctx.strokeStyle = mainColor;
-            ctx.lineWidth = lineWidth;
             ctx.stroke();
 
-            // Draw hip points
-            ctx.fillStyle = mainColor;
+            // Center line (posture reference) - subtle
+            ctx.save();
+            ctx.shadowBlur = 6;
+            ctx.globalAlpha = 0.5;
+            ctx.setLineDash([6, 6]);
             ctx.beginPath();
-            ctx.arc(lhp.x, lhp.y, jointRadius, 0, 2 * Math.PI);
-            ctx.fill();
-            ctx.beginPath();
-            ctx.arc(rhp.x, rhp.y, jointRadius, 0, 2 * Math.PI);
-            ctx.fill();
-
-            // Draw spine (center line)
-            const spineTopX = (lsp.x + rsp.x) / 2;
-            const spineTopY = (lsp.y + rsp.y) / 2;
-            const spineBottomX = (lhp.x + rhp.x) / 2;
-            const spineBottomY = (lhp.y + rhp.y) / 2;
-
-            ctx.beginPath();
-            ctx.setLineDash([8, 4]);
-            ctx.moveTo(spineTopX, spineTopY);
-            ctx.lineTo(spineBottomX, spineBottomY);
-            ctx.strokeStyle = accentColor;
+            const spineTop = {x: neckX, y: neckY};
+            const spineBottom = {x: (lhp.x + rhp.x) / 2, y: (lhp.y + rhp.y) / 2};
+            ctx.moveTo(spineTop.x, spineTop.y);
+            ctx.lineTo(spineBottom.x, spineBottom.y);
             ctx.stroke();
             ctx.setLineDash([]);
-
-            // Connect neck to face
-            if(isValid(nose)) {
-              const np = px(nose);
-              ctx.beginPath();
-              ctx.moveTo(spineTopX, spineTopY);
-              ctx.lineTo(np.x, np.y);
-              ctx.strokeStyle = mainColor;
-              ctx.stroke();
-            }
+            ctx.restore();
           } else {
-            // No hips - just draw shoulder line and neck
+            // Just shoulder line with neck
             ctx.beginPath();
             ctx.moveTo(lsp.x, lsp.y);
-            ctx.lineTo(rsp.x, rsp.y);
-            ctx.strokeStyle = mainColor;
-            ctx.lineWidth = lineWidth;
+            ctx.quadraticCurveTo(neckX, neckY, rsp.x, rsp.y);
             ctx.stroke();
-
-            if(isValid(nose)) {
-              const np = px(nose);
-              const midX = (lsp.x + rsp.x) / 2;
-              const midY = (lsp.y + rsp.y) / 2;
-              ctx.beginPath();
-              ctx.moveTo(midX, midY);
-              ctx.lineTo(np.x, np.y);
-              ctx.stroke();
-            }
           }
 
-          // Draw shoulder points
-          ctx.fillStyle = mainColor;
-          ctx.beginPath();
-          ctx.arc(lsp.x, lsp.y, jointRadius + 2, 0, 2 * Math.PI);
-          ctx.fill();
-          ctx.beginPath();
-          ctx.arc(rsp.x, rsp.y, jointRadius + 2, 0, 2 * Math.PI);
-          ctx.fill();
-
-          // ===== DRAW ARMS =====
-          // Left arm
-          if(isValid(le)) {
-            const lep = px(le);
-            ctx.strokeStyle = mainColor;
+          // Draw neck to head connection
+          if(np) {
             ctx.beginPath();
-            ctx.moveTo(lsp.x, lsp.y);
-            ctx.lineTo(lep.x, lep.y);
+            ctx.moveTo(neckX, neckY);
+            ctx.lineTo(np.x, np.y + canvas.height * 0.03);
             ctx.stroke();
-            ctx.fillStyle = mainColor;
-            ctx.beginPath();
-            ctx.arc(lep.x, lep.y, jointRadius, 0, 2 * Math.PI);
-            ctx.fill();
+          }
 
-            if(isValid(lw)) {
-              const lwp = px(lw);
+          // Small elegant joint indicators (optional, minimal)
+          const jointSize = 4;
+          ctx.shadowBlur = 8;
+
+          // Shoulders only - subtle dots
+          [lsp, rsp].forEach(p => {
+            if(p) {
               ctx.beginPath();
-              ctx.moveTo(lep.x, lep.y);
-              ctx.lineTo(lwp.x, lwp.y);
-              ctx.stroke();
-              ctx.beginPath();
-              ctx.arc(lwp.x, lwp.y, jointRadius - 2, 0, 2 * Math.PI);
+              ctx.arc(p.x, p.y, jointSize, 0, 2 * Math.PI);
+              ctx.fillStyle = glowColor;
               ctx.fill();
             }
-          }
-
-          // Right arm
-          if(isValid(re)) {
-            const rep = px(re);
-            ctx.strokeStyle = mainColor;
-            ctx.beginPath();
-            ctx.moveTo(rsp.x, rsp.y);
-            ctx.lineTo(rep.x, rep.y);
-            ctx.stroke();
-            ctx.fillStyle = mainColor;
-            ctx.beginPath();
-            ctx.arc(rep.x, rep.y, jointRadius, 0, 2 * Math.PI);
-            ctx.fill();
-
-            if(isValid(rw)) {
-              const rwp = px(rw);
-              ctx.beginPath();
-              ctx.moveTo(rep.x, rep.y);
-              ctx.lineTo(rwp.x, rwp.y);
-              ctx.stroke();
-              ctx.beginPath();
-              ctx.arc(rwp.x, rwp.y, jointRadius - 2, 0, 2 * Math.PI);
-              ctx.fill();
-            }
-          }
+          });
         }
 
         ctx.restore();
