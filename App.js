@@ -28,6 +28,8 @@ import * as Localization from 'expo-localization';
 import AdBanner from './AdBanner';
 import Torch from 'react-native-torch';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+// import NativeCamera from './NativeCamera'; // Disabled - ML Kit plugins have compatibility issues
+// import backgroundService from './BackgroundService'; // Disabled
 
 // Constants for configuration
 const CONFIG = {
@@ -48,26 +50,26 @@ const CONFIG = {
     SESSION_TIME: 86400 * 365,  // 1 year in seconds
     SESSIONS_COUNT: 100000,
   },
-  // Vibration intensity levels (duration in ms)
+  // Vibration intensity levels (duration in ms) - 더 넓은 범위로 조절 가능
   VIBRATION_INTENSITY: {
-    MIN: 100,
-    MAX: 1000,
-    DEFAULT: 400,
-    STEP: 100,
+    MIN: 100,      // 최소 0.1초
+    MAX: 2000,     // 최대 2초
+    DEFAULT: 800,  // 기본값 0.8초
+    STEP: 100,     // 0.1초 단위로 조절
   },
-  // Vibration patterns: [vibrate, pause, vibrate, pause, ...]
+  // Vibration patterns: [wait, vibrate, wait, vibrate, ...] - 첫 번째는 대기시간!
   VIBRATION_PATTERNS: {
-    single: (intensity) => [intensity],                    // 1회
-    double: (intensity) => [intensity, 100, intensity],    // 2회
-    triple: (intensity) => [intensity, 100, intensity, 100, intensity], // 3회
+    single: (intensity) => [0, intensity, 100, intensity],                    // 즉시 시작, 2회 진동
+    double: (intensity) => [0, intensity, 100, intensity, 100, intensity, 100, intensity],    // 4회 진동
+    triple: (intensity) => [0, intensity, 80, intensity, 80, intensity, 80, intensity, 80, intensity, 80, intensity], // 6회 진동
   },
-  // Flash patterns: [on_ms, off_ms, ...] - for camera torch
+  // Flash patterns: [on_ms, off_ms, ...] - for camera torch (더 길고 눈에 띄게)
   FLASH_PATTERNS: {
-    single: [300, 0],                      // 1회 깜빡임
-    double: [200, 150, 200, 0],            // 2회 깜빡임
-    triple: [150, 100, 150, 100, 150, 0],  // 3회 깜빡임
-    rapid: [100, 50, 100, 50, 100, 50, 100, 0], // 빠른 깜빡임
-    pulse: [500, 300, 500, 0],             // 느린 펄스
+    single: [500, 0],                      // 1회 깜빡임 (0.5초)
+    double: [400, 200, 400, 0],            // 2회 깜빡임
+    triple: [300, 150, 300, 150, 300, 0],  // 3회 깜빡임
+    rapid: [200, 100, 200, 100, 200, 100, 200, 100, 200, 0], // 빠른 5회 깜빡임
+    pulse: [800, 400, 800, 0],             // 느린 펄스
   },
 };
 
@@ -115,7 +117,7 @@ const TRANSLATIONS = {
       double: '2x',
       triple: '3x',
     },
-    flashAlert: 'Flashlight Alert',
+    flashAlert: 'Camera Flash Alert',
     flashAlertDesc: 'Flash camera light when reminder activates',
     flashPattern: 'Flash Pattern',
     flashPatternDesc: 'Choose flash style',
@@ -202,7 +204,7 @@ const TRANSLATIONS = {
       double: '2회',
       triple: '3회',
     },
-    flashAlert: '플래시 알림',
+    flashAlert: '카메라 플래시 알림',
     flashAlertDesc: '카메라 플래시로 알림',
     flashPattern: '깜빡임 패턴',
     flashPatternDesc: '깜빡임 스타일 선택',
@@ -658,7 +660,7 @@ export default function App() {
   const [vibrationEnabled, setVibrationEnabled] = useState(true);
   const [vibrationIntensity, setVibrationIntensity] = useState(CONFIG.VIBRATION_INTENSITY.DEFAULT);
   const [vibrationPattern, setVibrationPattern] = useState('double');
-  const [flashEnabled, setFlashEnabled] = useState(false);
+  const [flashEnabled, setFlashEnabled] = useState(true); // 기본 활성화
   const [flashPattern, setFlashPattern] = useState('double');
   const [totalAlerts, setTotalAlerts] = useState(0);
   const [sessionTime, setSessionTime] = useState(0);
@@ -670,6 +672,10 @@ export default function App() {
   const [showSessionResult, setShowSessionResult] = useState(false);
   const [sessionResult, setSessionResult] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [showFlashOverlay, setShowFlashOverlay] = useState(false);
+  // Native camera disabled due to ML Kit plugin compatibility issues
+  // const [useNativeCamera, setUseNativeCamera] = useState(false);
+  // const [nativeCameraReady, setNativeCameraReady] = useState(false);
 
   const webViewRef = useRef(null);
   const monitoringInterval = useRef(null);
@@ -680,6 +686,8 @@ export default function App() {
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const pulseAnimationRef = useRef(null);
   const isMountedRef = useRef(true);
+  const badPostureCountRef = useRef(0); // Ref for immediate alert triggering
+  const lastAlertTimeRef = useRef(0); // Throttle alerts to 1 per second
 
   // Refs for latest values to avoid stale closures in callbacks
   const sessionTimeRef = useRef(sessionTime);
@@ -748,7 +756,7 @@ export default function App() {
       try {
         const { status } = await Notifications.requestPermissionsAsync();
         if (status !== 'granted') {
-          console.log('Notification permission not granted');
+          // Permission not granted - alerts may not work
         }
       } catch (error) {
         console.error('Notification permission error:', error);
@@ -842,11 +850,9 @@ export default function App() {
     return () => subscription.remove();
   }, [isMonitoring, saveSessionStats]);
 
-  // Execute torch flash pattern using camera flashlight
+  // Execute torch flash pattern (카메라 플래시 사용, 실패시 화면 플래시로 fallback)
   const executeTorchPattern = useCallback(async (pattern) => {
-    console.log('executeTorchPattern called with pattern:', pattern);
     const timings = CONFIG.FLASH_PATTERNS[pattern] || CONFIG.FLASH_PATTERNS.double;
-    console.log('Torch timings:', timings);
 
     try {
       for (let i = 0; i < timings.length; i += 2) {
@@ -854,32 +860,47 @@ export default function App() {
         const offTime = timings[i + 1] || 0;
 
         if (onTime > 0) {
-          console.log('Torch ON for', onTime, 'ms');
-          const result = await Torch.switchState(true);
-          console.log('Torch.switchState(true) result:', result);
-          await new Promise(resolve => setTimeout(resolve, onTime));
-          await Torch.switchState(false);
-          console.log('Torch OFF');
+          // 카메라 토치 시도
+          try {
+            await Torch.switchState(true);
+            await new Promise(resolve => setTimeout(resolve, onTime));
+            await Torch.switchState(false);
+          } catch (torchError) {
+            // 토치 실패시 화면 플래시로 fallback
+            setShowFlashOverlay(true);
+            await new Promise(resolve => setTimeout(resolve, onTime));
+            setShowFlashOverlay(false);
+          }
         }
         if (offTime > 0) {
           await new Promise(resolve => setTimeout(resolve, offTime));
         }
       }
     } catch (error) {
-      console.error('Torch error:', error.message || error);
+      console.error('Flash error:', error);
     } finally {
-      // Ensure torch is off
+      // 토치 끄기 보장
       try {
         await Torch.switchState(false);
-      } catch (e) {
-        console.log('Torch off error:', e);
+      } catch {
+        // 무시
       }
+      setShowFlashOverlay(false);
     }
   }, []);
 
   const triggerBadPostureAlert = useCallback(async () => {
-    console.log('=== ALERT TRIGGERED ===');
-    console.log('vibrationEnabled:', vibrationEnabled, 'flashEnabled:', flashEnabled, 'alertEnabled:', alertEnabled);
+    // 앱이 백그라운드에 있으면 알림 트리거하지 않음
+    if (appState.current !== 'active') {
+      return;
+    }
+
+    // 1초에 한 번만 알림 트리거 (throttle)
+    const now = Date.now();
+    if (now - lastAlertTimeRef.current < 1000) {
+      return;
+    }
+    lastAlertTimeRef.current = now;
 
     const newTotalAlerts = totalAlerts + 1;
     setTotalAlerts(newTotalAlerts);
@@ -887,11 +908,9 @@ export default function App() {
 
     // Vibration alert with intensity and pattern
     if (vibrationEnabled) {
-      console.log('Triggering vibration, pattern:', vibrationPattern, 'intensity:', vibrationIntensity);
       try {
         const patternFn = CONFIG.VIBRATION_PATTERNS[vibrationPattern] || CONFIG.VIBRATION_PATTERNS.double;
         const pattern = patternFn(vibrationIntensity);
-        console.log('Vibration pattern array:', pattern);
         Vibration.vibrate(pattern);
       } catch (error) {
         console.error('Vibration error:', error);
@@ -904,9 +923,8 @@ export default function App() {
       }
     }
 
-    // Flashlight (torch) alert with pattern
+    // Camera torch flash alert with pattern (카메라 플래시)
     if (flashEnabled) {
-      console.log('Triggering flashlight, pattern:', flashPattern);
       try {
         await executeTorchPattern(flashPattern);
       } catch (error) {
@@ -931,6 +949,9 @@ export default function App() {
     }
   }, [alertEnabled, vibrationEnabled, vibrationIntensity, vibrationPattern, flashEnabled, flashPattern, totalAlerts, saveSettings, executeTorchPattern, t]);
 
+  // Native camera posture change handler - disabled due to ML Kit plugin compatibility issues
+  // const handleNativePostureChange = useCallback((postureData) => { ... }, []);
+
   // Handle messages from WebView (pose detection results)
   const handleWebViewMessage = useCallback((event) => {
     try {
@@ -953,19 +974,21 @@ export default function App() {
         }
 
         if (status === POSTURE_STATUS.BAD) {
-          setBadPostureCount(prev => {
-            if (prev >= CONFIG.BAD_POSTURE_THRESHOLD) {
-              triggerBadPostureAlert();
-              return 0;
-            }
-            return prev + 1;
-          });
+          // Use ref for immediate control, state for UI
+          badPostureCountRef.current += 1;
+          if (badPostureCountRef.current > CONFIG.BAD_POSTURE_THRESHOLD) {
+            triggerBadPostureAlert();
+            badPostureCountRef.current = 0;
+            setBadPostureCount(0);
+          } else {
+            setBadPostureCount(badPostureCountRef.current);
+          }
         } else {
+          badPostureCountRef.current = 0;
           setBadPostureCount(0);
         }
       } else if (data.type === 'calibrated') {
         // Pose calibrated - monitoring is now active
-        console.log('Pose calibrated');
       } else if (data.type === 'error') {
         console.error('WebView error:', data.message);
       }
@@ -1065,17 +1088,15 @@ export default function App() {
         // Disable keep-awake when stopping
         try {
           deactivateKeepAwake();
-          console.log('Keep-awake deactivated');
-        } catch (e) {
-          console.log('Keep-awake deactivate error:', e);
+        } catch {
+          // Ignore keep-awake error
         }
 
         // Dismiss monitoring notification
         try {
           await Notifications.dismissNotificationAsync('monitoring-notification');
-          console.log('Monitoring notification dismissed');
-        } catch (e) {
-          console.log('Notification dismiss error:', e);
+        } catch {
+          // Ignore notification dismiss error
         }
 
         // Capture session data before resetting
@@ -1099,39 +1120,38 @@ export default function App() {
         setShowSessionResult(false);
         setSessionTime(0);
         setBadPostureCount(0);
+        badPostureCountRef.current = 0; // Reset ref too
         setIsMonitoring(true);
         setPostureStatus(POSTURE_STATUS.GOOD);
 
         // Enable keep-awake to prevent screen from turning off during monitoring
         try {
           await activateKeepAwakeAsync();
-          console.log('Keep-awake activated - screen will stay on');
-        } catch (e) {
-          console.log('Keep-awake activate error:', e);
+        } catch {
+          // Ignore keep-awake error
         }
 
         // Show persistent notification for monitoring
         try {
           await Notifications.scheduleNotificationAsync({
             content: {
-              title: '자세 모니터링 중',
-              body: '좋은 자세를 유지하세요. 탭하여 앱으로 돌아가기',
+              title: lang === 'ko' ? '자세 모니터링 중' : 'Posture Monitoring Active',
+              body: lang === 'ko' ? '좋은 자세를 유지하세요. 탭하여 앱으로 돌아가기' : 'Maintain good posture. Tap to return to app',
               sticky: true,
               autoDismiss: false,
             },
             trigger: null,
             identifier: 'monitoring-notification',
           });
-          console.log('Monitoring notification shown');
-        } catch (e) {
-          console.log('Monitoring notification error:', e);
+        } catch {
+          // Ignore notification error
         }
       }
     } finally {
       // Delay to prevent rapid clicking
       setTimeout(() => setIsProcessing(false), CONFIG.BUTTON_DEBOUNCE);
     }
-  }, [isMonitoring, isProcessing, saveSessionStats, sessionsCount, saveSettings, formatTime, totalAlerts, t]);
+  }, [isMonitoring, isProcessing, saveSessionStats, sessionsCount, saveSettings, formatTime, totalAlerts, t, lang]);
 
   const statsData = useMemo(() => ({
     totalAlerts,
@@ -1241,41 +1261,42 @@ export default function App() {
 
       {/* Camera View with AI Pose Detection */}
       <Animated.View style={[styles.cameraContainer, { flex: 1, transform: [{ scale: pulseAnim }] }]}>
+        {/* WebView-based pose detection */}
         <WebView
-          ref={webViewRef}
-          source={{ html: POSE_DETECTION_HTML, baseUrl: 'https://localhost/' }}
-          style={styles.camera}
-          onMessage={handleWebViewMessage}
-          javaScriptEnabled={true}
-          domStorageEnabled={true}
-          mediaPlaybackRequiresUserAction={false}
-          allowsInlineMediaPlayback={true}
-          originWhitelist={['*']}
-          mixedContentMode="always"
-          allowFileAccess={true}
-          allowUniversalAccessFromFileURLs={true}
-          scalesPageToFit={true}
-          mediaCapturePermissionGrantType="grant"
-          androidLayerType="hardware"
-          geolocationEnabled={false}
-          allowsProtectedMedia={true}
-          webviewDebuggingEnabled={__DEV__}
-          onPermissionRequest={(request) => {
-            // Grant all permissions requested by WebView (camera, audio)
-            if (request && request.grant) {
-              request.grant(request.resources);
-            }
-          }}
-          onError={(syntheticEvent) => {
-            const { nativeEvent } = syntheticEvent;
-            console.warn('WebView error:', nativeEvent);
-          }}
-          onHttpError={(syntheticEvent) => {
-            const { nativeEvent } = syntheticEvent;
-            console.warn('WebView HTTP error:', nativeEvent.statusCode);
-          }}
-        />
-        {/* Overlay for session info - shown on top of WebView */}
+            ref={webViewRef}
+            source={{ html: POSE_DETECTION_HTML, baseUrl: 'https://localhost/' }}
+            style={styles.camera}
+            onMessage={handleWebViewMessage}
+            javaScriptEnabled={true}
+            domStorageEnabled={true}
+            mediaPlaybackRequiresUserAction={false}
+            allowsInlineMediaPlayback={true}
+            originWhitelist={['*']}
+            mixedContentMode="always"
+            allowFileAccess={true}
+            allowUniversalAccessFromFileURLs={true}
+            scalesPageToFit={true}
+            mediaCapturePermissionGrantType="grant"
+            androidLayerType="hardware"
+            geolocationEnabled={false}
+            allowsProtectedMedia={true}
+            webviewDebuggingEnabled={__DEV__}
+            onPermissionRequest={(request) => {
+              // Grant all permissions requested by WebView (camera, audio)
+              if (request && request.grant) {
+                request.grant(request.resources);
+              }
+            }}
+            onError={(syntheticEvent) => {
+              const { nativeEvent } = syntheticEvent;
+              console.warn('WebView error:', nativeEvent);
+            }}
+            onHttpError={(syntheticEvent) => {
+              const { nativeEvent } = syntheticEvent;
+              console.warn('WebView HTTP error:', nativeEvent.statusCode);
+            }}
+          />
+        {/* Overlay for session info - shown on top of camera */}
         {isMonitoring && (
           <View style={styles.webViewOverlay}>
             <View style={styles.sessionInfo}>
@@ -1389,6 +1410,11 @@ export default function App() {
         result={sessionResult}
         t={t}
       />
+
+      {/* Screen Flash Overlay - 화면 깜빡임 알림 */}
+      {showFlashOverlay && (
+        <View style={styles.flashOverlay} pointerEvents="none" />
+      )}
     </SafeAreaView>
   );
 }
@@ -1519,4 +1545,29 @@ const styles = StyleSheet.create({
   intensityButtonText: { fontSize: 12, color: COLORS.textSecondary, fontWeight: '600' },
   intensityButtonTextActive: { color: COLORS.text },
   intensityHint: { fontSize: 11, color: COLORS.textMuted, marginTop: 6, textAlign: 'center' },
+  // Screen flash overlay - 화면 전체를 덮는 밝은 빨간색/흰색 플래시
+  flashOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(255, 100, 100, 0.9)',
+    zIndex: 9999,
+  },
+  // Background mode indicator
+  backgroundModeIndicator: {
+    position: 'absolute',
+    top: Platform.OS === 'android' ? 60 : 50,
+    right: 10,
+    backgroundColor: 'rgba(99, 102, 241, 0.9)',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  backgroundModeText: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: 'bold',
+  },
 });
