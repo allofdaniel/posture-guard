@@ -17,6 +17,7 @@ export const POSE_DETECTION_HTML = `
     .warning { background: rgba(245, 158, 11, 0.9); color: white; }
     .bad { background: rgba(239, 68, 68, 0.9); color: white; }
     #issues { position: absolute; bottom: 60px; left: 50%; transform: translateX(-50%); padding: 6px 12px; border-radius: 15px; background: rgba(0, 0, 0, 0.7); color: white; font-family: sans-serif; font-size: 12px; z-index: 100; display: none; text-align: center; max-width: 90%; }
+    #orientation { position: absolute; top: 50px; left: 50%; transform: translateX(-50%); padding: 6px 14px; border-radius: 20px; background: rgba(25, 230, 107, 0.85); color: white; font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 13px; font-weight: 500; z-index: 100; display: none; }
     #fallback-message { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; color: white; padding: 20px; display: none; }
     #fallback-message h3 { margin-bottom: 10px; font-size: 18px; }
     #fallback-message p { font-size: 14px; opacity: 0.8; margin-bottom: 8px; }
@@ -29,6 +30,7 @@ export const POSE_DETECTION_HTML = `
     <canvas id="canvas"></canvas>
     <div id="status" class="loading">Loading...</div>
     <div id="issues"></div>
+    <div id="orientation"></div>
     <div id="fallback-message">
       <h3>📷 Camera Setup</h3>
       <p>Camera access requires a physical device.</p>
@@ -39,13 +41,72 @@ export const POSE_DETECTION_HTML = `
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
   <script>
     (function() {
-      let pose, video, canvas, ctx, calibPose, isMonitoring = false, sens = 1.0, simMode = false;
+      let pose, video, canvas, ctx, calibPose, isMonitoring = false, sens = 1.0, simMode = false, privacyMode = false;
       let retryCount = 0;
       const MAX_RETRIES = 3;
       const statusEl = document.getElementById("status");
       const issuesEl = document.getElementById("issues");
+      const orientationEl = document.getElementById("orientation");
       const fallbackEl = document.getElementById("fallback-message");
       const debugEl = document.getElementById("debug-log");
+
+      // Face orientation detection - front, side, partial
+      function detectOrientation(lm) {
+        // Landmarks: 0=nose, 7=leftEar, 8=rightEar, 11=leftShoulder, 12=rightShoulder
+        const nose = lm[0], leftEar = lm[7], rightEar = lm[8];
+        const leftShoulder = lm[11], rightShoulder = lm[12];
+
+        // Check visibility with lower thresholds
+        const noseVis = nose && nose.visibility >= 0.3;
+        const leftEarVis = leftEar && leftEar.visibility >= 0.3;
+        const rightEarVis = rightEar && rightEar.visibility >= 0.3;
+        const leftShoulderVis = leftShoulder && leftShoulder.visibility >= 0.3;
+        const rightShoulderVis = rightShoulder && rightShoulder.visibility >= 0.3;
+
+        if (!noseVis) return { type: "unknown", text: "📷 Position yourself", icon: "📷" };
+
+        // Calculate shoulder width ratio (to detect side view)
+        let shoulderWidthRatio = 0;
+        if (leftShoulderVis && rightShoulderVis) {
+          shoulderWidthRatio = Math.abs(leftShoulder.x - rightShoulder.x);
+        }
+
+        // Calculate ear distance
+        let earDiff = 0;
+        if (leftEarVis && rightEarVis) {
+          earDiff = Math.abs(leftEar.x - rightEar.x);
+        }
+
+        // Count visible ears
+        const visibleEars = (leftEarVis ? 1 : 0) + (rightEarVis ? 1 : 0);
+
+        // Debug: log values
+        // console.log("SW:", shoulderWidthRatio.toFixed(3), "Ears:", visibleEars, "EarDiff:", earDiff.toFixed(3));
+
+        // Side view detection - more lenient
+        // If only one ear visible OR shoulder width is narrow
+        if (visibleEars === 1 || shoulderWidthRatio < 0.18) {
+          const side = leftEarVis && !rightEarVis ? "Right" : "Left";
+          return { type: "side", text: "👤 Side (" + side + ")", icon: "👤" };
+        }
+
+        // Partial view - both ears but narrow shoulders or small ear gap
+        if (visibleEars === 2 && (shoulderWidthRatio < 0.25 || earDiff < 0.06)) {
+          return { type: "partial", text: "🔄 Diagonal", icon: "🔄" };
+        }
+
+        // Front view - both ears visible with good separation
+        if (visibleEars === 2 && shoulderWidthRatio >= 0.25 && earDiff >= 0.06) {
+          return { type: "front", text: "😊 Front", icon: "😊" };
+        }
+
+        // Default based on shoulder width
+        if (shoulderWidthRatio >= 0.2) {
+          return { type: "front", text: "😊 Front", icon: "😊" };
+        }
+
+        return { type: "partial", text: "🔄 Diagonal", icon: "🔄" };
+      }
 
       // Debug log - disabled for production
       // debugEl.style.display = 'block';
@@ -57,7 +118,6 @@ export const POSE_DETECTION_HTML = `
       }
 
       function log(m) {
-        console.log(m);
         sendRN({type:"log", message:m});
         if(debugEl) {
           debugEl.innerHTML += m + "<br>";
@@ -69,21 +129,78 @@ export const POSE_DETECTION_HTML = `
 
       function calibrate(lm) {
         const ls = lm[11], rs = lm[12], n = lm[0];
-        if(!isValid(ls) || !isValid(rs)) return null;
+        const le = lm[7], re = lm[8]; // ears
+        const lh = lm[23], rh = lm[24]; // hips
+
+        // Need at least one shoulder visible
+        if(!isValid(ls) && !isValid(rs)) return null;
+
+        const shoulderWidth = (isValid(ls) && isValid(rs)) ? Math.abs(ls.x - rs.x) : 0;
+        const isSideView = shoulderWidth < 0.12;
+
+        // Get visible landmarks for side view
+        const shoulder = isValid(ls) ? ls : rs;
+        const ear = (le && le.visibility >= 0.4) ? le : ((re && re.visibility >= 0.4) ? re : null);
+        const hip = (lh && lh.visibility >= 0.4) ? lh : ((rh && rh.visibility >= 0.4) ? rh : null);
+
         return {
-          scY: (ls.y + rs.y) / 2,
-          sw: Math.abs(ls.x - rs.x),
-          nY: isValid(n) ? n.y : null
+          scY: (isValid(ls) && isValid(rs)) ? (ls.y + rs.y) / 2 : shoulder.y,
+          sw: shoulderWidth || 0.2, // default for side view
+          nY: isValid(n) ? n.y : null,
+          isSideView: isSideView,
+          // Side view specific calibration
+          earX: ear ? ear.x : null,
+          shoulderX: shoulder ? shoulder.x : null,
+          hipX: hip ? hip.x : null
         };
       }
 
       function analyze(lm, cal, s) {
         const issues = [];
         const ls = lm[11], rs = lm[12], n = lm[0];
-        if(!isValid(ls) || !isValid(rs)) return {status: "good", issues: []};
-        if((ls.y + rs.y) / 2 - cal.scY > 0.04 * s) issues.push("Slouching");
-        if(Math.abs(ls.x - rs.x) / cal.sw < 1 - 0.12 * s) issues.push("Leaning");
-        if(isValid(n) && cal.nY && n.y - cal.nY > 0.05 * s) issues.push("Head Down");
+        const le = lm[7], re = lm[8]; // ears
+        const lh = lm[23], rh = lm[24]; // hips
+
+        // Detect view type
+        const leftEarVis = le && le.visibility >= 0.4;
+        const rightEarVis = re && re.visibility >= 0.4;
+        const shoulderWidth = (isValid(ls) && isValid(rs)) ? Math.abs(ls.x - rs.x) : 0;
+        const isSideView = shoulderWidth < 0.12;
+
+        if(isSideView) {
+          // Side view analysis - different metrics
+          // Get visible shoulder and ear
+          const shoulder = isValid(ls) ? ls : (isValid(rs) ? rs : null);
+          const ear = leftEarVis ? le : (rightEarVis ? re : null);
+          const hip = (lh && lh.visibility >= 0.4) ? lh : ((rh && rh.visibility >= 0.4) ? rh : null);
+
+          if(shoulder && ear) {
+            // Forward head posture: ear is too far forward relative to shoulder
+            const headForward = ear.x - shoulder.x;
+            if(Math.abs(headForward) > 0.08 * s) {
+              issues.push("Forward Head");
+            }
+          }
+
+          if(shoulder && hip) {
+            // Rounded shoulders: shoulder too far forward from hip
+            const shoulderForward = shoulder.x - hip.x;
+            if(Math.abs(shoulderForward) > 0.1 * s) {
+              issues.push("Rounded Shoulders");
+            }
+          }
+
+          if(isValid(n) && cal.nY && n.y - cal.nY > 0.06 * s) {
+            issues.push("Head Down");
+          }
+        } else {
+          // Front view analysis - original logic
+          if(!isValid(ls) || !isValid(rs)) return {status: "good", issues: []};
+          if((ls.y + rs.y) / 2 - cal.scY > 0.04 * s) issues.push("Slouching");
+          if(Math.abs(ls.x - rs.x) / cal.sw < 1 - 0.12 * s) issues.push("Leaning");
+          if(isValid(n) && cal.nY && n.y - cal.nY > 0.05 * s) issues.push("Head Down");
+        }
+
         return {
           status: issues.length >= 2 ? "bad" : issues.length === 1 ? "warning" : "good",
           issues
@@ -183,20 +300,19 @@ export const POSE_DETECTION_HTML = `
           ctx.stroke();
         }
 
-        // Draw multiple layers for soft glow effect
+        // Draw fluorescent green dotted line outline
+        // No blur to keep dots crisp and separate
         const layers = [
-          { blur: 40, alpha: 0.15, width: 25 },
-          { blur: 25, alpha: 0.25, width: 15 },
-          { blur: 15, alpha: 0.4, width: 8 },
-          { blur: 8, alpha: 0.6, width: 4 },
-          { blur: 3, alpha: 0.8, width: 2 }
+          { blur: 0, alpha: 0.5, width: 6, dash: [8, 20] },
+          { blur: 0, alpha: 0.9, width: 3, dash: [6, 18] }
         ];
 
         layers.forEach(layer => {
-          ctx.shadowColor = "rgba(0, 220, 255, " + layer.alpha + ")";
+          ctx.shadowColor = "rgba(25, 230, 107, " + layer.alpha + ")";
           ctx.shadowBlur = layer.blur;
-          ctx.strokeStyle = "rgba(0, 220, 255, " + (layer.alpha * 0.5) + ")";
+          ctx.strokeStyle = "rgba(25, 230, 107, " + (layer.alpha * 0.8) + ")";
           ctx.lineWidth = layer.width;
+          ctx.setLineDash(layer.dash);
 
           drawContour(smoothLeft);
           drawContour(smoothRight);
@@ -212,6 +328,8 @@ export const POSE_DETECTION_HTML = `
           }
         });
 
+        // Reset line dash
+        ctx.setLineDash([]);
         ctx.restore();
       }
 
@@ -226,6 +344,12 @@ export const POSE_DETECTION_HTML = `
 
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+        // Privacy mode: fill background with black and show only outline
+        if(privacyMode) {
+          ctx.fillStyle = '#000000';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+
         // Draw body outline from segmentation mask
         if(mask) {
           drawBodyOutline(mask);
@@ -237,6 +361,13 @@ export const POSE_DETECTION_HTML = `
           const lm = r.poseLandmarks;
           const mask = r.segmentationMask || null;
           drawPose(lm, mask);
+
+          // Always show face orientation
+          const orientation = detectOrientation(lm);
+          orientationEl.style.display = "block";
+          orientationEl.textContent = orientation.text;
+          sendRN({type: "orientation", orientation: orientation.type, text: orientation.text});
+
           if(isMonitoring) {
             if(!calibPose) {
               calibPose = calibrate(lm);
@@ -250,7 +381,7 @@ export const POSE_DETECTION_HTML = `
               statusEl.className = res.status;
               issuesEl.style.display = res.issues.length > 0 ? "block" : "none";
               issuesEl.textContent = res.issues.join(", ");
-              sendRN({type: "posture", status: res.status, issues: res.issues});
+              sendRN({type: "posture", status: res.status, issues: res.issues, orientation: orientation.type});
             }
           } else {
             statusEl.textContent = "Ready";
@@ -260,6 +391,7 @@ export const POSE_DETECTION_HTML = `
           ctx.clearRect(0, 0, canvas.width, canvas.height);
           statusEl.textContent = "Position yourself";
           statusEl.className = "loading";
+          orientationEl.style.display = "none";
         }
       }
 
@@ -271,19 +403,26 @@ export const POSE_DETECTION_HTML = `
         sendRN({type: "ready", simulation: true});
 
         let fc = 0;
-        (function sf() {
-          fc++;
-          const w = Math.sin(fc / 30) * 0.02;
-          const sl = Array(33).fill(0).map(() => ({x: 0.5, y: 0.5, z: 0, visibility: 0.9}));
-          sl[0] = {x: 0.5, y: 0.15 + w, z: 0, visibility: 0.95};
-          sl[11] = {x: 0.35, y: 0.35 + w, z: 0, visibility: 0.95};
-          sl[12] = {x: 0.65, y: 0.35 + w, z: 0, visibility: 0.95};
-          drawPose(sl);
-          if(isMonitoring && !calibPose) {
-            calibPose = calibrate(sl);
+        let lastSimTime = 0;
+        const SIM_FPS = 15; // Also throttle simulation to 15fps
+        const SIM_INTERVAL = 1000 / SIM_FPS;
+
+        (function sf(timestamp) {
+          if (timestamp - lastSimTime >= SIM_INTERVAL) {
+            lastSimTime = timestamp;
+            fc++;
+            const w = Math.sin(fc / 30) * 0.02;
+            const sl = Array(33).fill(0).map(() => ({x: 0.5, y: 0.5, z: 0, visibility: 0.9}));
+            sl[0] = {x: 0.5, y: 0.15 + w, z: 0, visibility: 0.95};
+            sl[11] = {x: 0.35, y: 0.35 + w, z: 0, visibility: 0.95};
+            sl[12] = {x: 0.65, y: 0.35 + w, z: 0, visibility: 0.95};
+            drawPose(sl);
+            if(isMonitoring && !calibPose) {
+              calibPose = calibrate(sl);
+            }
           }
           requestAnimationFrame(sf);
-        })();
+        })(0);
       }
 
       async function tryGetUserMedia(constraints) {
@@ -409,19 +548,27 @@ export const POSE_DETECTION_HTML = `
           sendRN({type: "ready", simulation: false});
 
           let poseReady = true;
-          // Start pose detection loop
-          (function pf() {
-            if(pose && video && video.readyState === 4 && !simMode && poseReady) {
-              poseReady = false;
-              pose.send({image: video}).then(() => {
-                poseReady = true;
-              }).catch((e) => {
-                log("Pose send error: " + e.message);
-                poseReady = true;
-              });
+          let lastFrameTime = 0;
+          const TARGET_FPS = 15; // Limit to 15fps for battery savings
+          const FRAME_INTERVAL = 1000 / TARGET_FPS;
+
+          // Start pose detection loop with FPS throttling
+          (function pf(timestamp) {
+            // Throttle to target FPS
+            if (timestamp - lastFrameTime >= FRAME_INTERVAL) {
+              if(pose && video && video.readyState === 4 && !simMode && poseReady) {
+                poseReady = false;
+                lastFrameTime = timestamp;
+                pose.send({image: video}).then(() => {
+                  poseReady = true;
+                }).catch((e) => {
+                  log("Pose send error: " + e.message);
+                  poseReady = true;
+                });
+              }
             }
             requestAnimationFrame(pf);
-          })();
+          })(0);
         } catch (e) {
           log("AI load error: " + e.message);
           startSim();
@@ -445,6 +592,13 @@ export const POSE_DETECTION_HTML = `
           } else if(d.type === "setSensitivity") {
             sens = d.value || 1.0;
             log("Sensitivity updated: " + sens);
+          } else if(d.type === "setPrivacyMode") {
+            privacyMode = d.enabled === true;
+            if(video) {
+              video.style.opacity = privacyMode ? '0' : '1';
+            }
+            log("Privacy mode: " + (privacyMode ? "ON" : "OFF"));
+            sendRN({type: "privacyModeChanged", enabled: privacyMode});
           }
         } catch(ex) {
           log("Message parse error: " + ex.message);

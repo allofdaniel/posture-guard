@@ -27,7 +27,7 @@ const NOTIFICATION_CONFIG = {
   icon: 'ic_notification',
   ongoing: true,
   setOnlyAlertOnce: true,
-  color: '#6366F1',
+  color: '#19e66b',
 };
 
 class BackgroundServiceManager {

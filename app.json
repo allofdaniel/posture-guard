@@ -2,14 +2,14 @@
   "expo": {
     "name": "Posture Guard",
     "slug": "posture-guard",
-    "version": "1.3.0",
-    "orientation": "portrait",
+    "version": "1.5.1",
+    "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#6366F1"
+      "backgroundColor": "#19e66b"
     },
     "locales": {
       "ko": "./locales/ko.json"
@@ -28,10 +28,10 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#6366F1"
+        "backgroundColor": "#19e66b"
       },
       "package": "com.allofdaniel.postureguard",
-      "versionCode": 10,
+      "versionCode": 31,
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.VIBRATE",
@@ -45,7 +45,9 @@
           "android": {
             "compileSdkVersion": 35,
             "targetSdkVersion": 35,
-            "minSdkVersion": 24
+            "minSdkVersion": 24,
+            "enableProguardInReleaseBuilds": false,
+            "enableMinifyInReleaseBuilds": false
           }
         }
       ],
@@ -60,7 +62,7 @@
         "expo-notifications",
         {
           "icon": "./assets/notification-icon.png",
-          "color": "#6366F1"
+          "color": "#19e66b"
         }
       ],
       [
@@ -82,6 +84,12 @@
         "projectId": "b2abd38e-7b6b-482b-9e59-1551a7fb9f87"
       }
     },
-    "owner": "allofdaniel1"
+    "owner": "allofdaniel1",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/b2abd38e-7b6b-482b-9e59-1551a7fb9f87"
+    }
   }
 }

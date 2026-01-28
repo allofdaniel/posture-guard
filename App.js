@@ -4,6 +4,7 @@ import {
   Text,
   View,
   TouchableOpacity,
+  Pressable,
   SafeAreaView,
   Platform,
   Alert,
@@ -28,6 +29,12 @@ import * as Localization from 'expo-localization';
 import AdBanner from './AdBanner';
 import Torch from 'react-native-torch';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+import { Audio } from 'expo-av';
+import { isPipSupported, enterPipMode } from './PipModule';
+import { updateWidget } from './WidgetModule';
+import PremiumModal from './PremiumModal';
+import { initializePremium, isAdFree, cleanupPremium } from './PremiumManager';
+import Slider from '@react-native-community/slider';
 // import NativeCamera from './NativeCamera'; // Disabled - ML Kit plugins have compatibility issues
 // import backgroundService from './BackgroundService'; // Disabled
 
@@ -263,18 +270,18 @@ const getDeviceLanguage = () => {
 };
 
 const COLORS = {
-  primary: '#6366F1',
-  primaryDark: '#4F46E5',
+  primary: '#19e66b',
+  primaryDark: '#15c95c',
   success: '#10B981',
   warning: '#F59E0B',
   danger: '#EF4444',
-  background: '#0F172A',
-  surface: '#1E293B',
-  surfaceLight: '#334155',
+  background: '#112117',
+  surface: '#1a2c22',
+  surfaceLight: '#2a3d30',
   text: '#F8FAFC',
   textSecondary: '#94A3B8',
   textMuted: '#64748B',
-  border: '#475569',
+  border: '#3d5446',
   overlay: 'rgba(0,0,0,0.6)',
   overlayStrong: 'rgba(0,0,0,0.7)',
 };
@@ -343,6 +350,7 @@ const OnboardingScreen = React.memo(({ onComplete, t }) => {
         )}
       </View>
     </SafeAreaView>
+
   );
 });
 
@@ -667,12 +675,21 @@ export default function App() {
   const [totalSessionTime, setTotalSessionTime] = useState(0);
   const [sessionsCount, setSessionsCount] = useState(0);
   const [goodPostureTime, setGoodPostureTime] = useState(0);
+  const [sessionGoodPostureTime, setSessionGoodPostureTime] = useState(0); // Session-specific good posture time
+  const [warningCount, setWarningCount] = useState(0);
+  const [errorCount, setErrorCount] = useState(0);
+
+  // Calculate good posture rate for current session (capped at 100%)
+  const goodPostureRate = sessionTime > 0 ? Math.min(100, Math.round((sessionGoodPostureTime / sessionTime) * 100)) : 100;
   const [showSettings, setShowSettings] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [showSessionResult, setShowSessionResult] = useState(false);
   const [sessionResult, setSessionResult] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [showFlashOverlay, setShowFlashOverlay] = useState(false);
+  const [pipSupported, setPipSupported] = useState(false);
+  const [showPremium, setShowPremium] = useState(false);
+  const [hideAds, setHideAds] = useState(false);
   // Native camera disabled due to ML Kit plugin compatibility issues
   // const [useNativeCamera, setUseNativeCamera] = useState(false);
   // const [nativeCameraReady, setNativeCameraReady] = useState(false);
@@ -718,6 +735,81 @@ export default function App() {
     };
     initLanguage();
   }, []);
+
+  // Check PiP support on mount
+  useEffect(() => {
+    const checkPipSupport = async () => {
+      try {
+        const supported = await isPipSupported();
+        setPipSupported(supported);
+      } catch (error) {
+        console.error('PiP support check error:', error);
+        setPipSupported(false);
+      }
+    };
+    checkPipSupport();
+  }, []);
+
+  // Initialize premium and check ad-free status
+  useEffect(() => {
+    const initPremium = async () => {
+      try {
+        await initializePremium();
+        const adFree = await isAdFree();
+        setHideAds(adFree);
+      } catch (error) {
+        console.error('Premium init error:', error);
+      }
+    };
+    initPremium();
+
+    return () => {
+      cleanupPremium();
+    };
+  }, []);
+
+  // Handler for entering PiP mode
+  const handleEnterPipMode = useCallback(async () => {
+    if (!pipSupported) return;
+    try {
+      await enterPipMode(9, 16); // Portrait aspect ratio for posture view
+    } catch (error) {
+      console.error('Enter PiP error:', error);
+    }
+  }, [pipSupported]);
+
+  // Update home screen widget when monitoring state or posture changes
+  const lastWidgetUpdateRef = useRef(0);
+  useEffect(() => {
+    const updateWidgetStatus = async () => {
+      // Throttle updates to every 5 seconds
+      const now = Date.now();
+      if (now - lastWidgetUpdateRef.current < 5000) return;
+      lastWidgetUpdateRef.current = now;
+
+      try {
+        // Calculate current posture score
+        const currentScore = sessionTimeRef.current > 0
+          ? Math.round((goodPostureTimeRef.current / sessionTimeRef.current) * 100)
+          : 0;
+        await updateWidget(currentScore, isMonitoring);
+      } catch (error) {
+        // Widget update error - ignore silently
+      }
+    };
+
+    updateWidgetStatus();
+  }, [isMonitoring, postureStatus]);
+
+  // Update widget when session ends
+  useEffect(() => {
+    if (!isMonitoring) {
+      const finalScore = totalSessionTime > 0
+        ? Math.round((goodPostureTime / totalSessionTime) * 100)
+        : 0;
+      updateWidget(finalScore, false).catch(() => {});
+    }
+  }, [isMonitoring, totalSessionTime, goodPostureTime]);
 
   useEffect(() => {
     const checkOnboarding = async () => {
@@ -902,9 +994,12 @@ export default function App() {
     }
     lastAlertTimeRef.current = now;
 
-    const newTotalAlerts = totalAlerts + 1;
-    setTotalAlerts(newTotalAlerts);
-    saveSettings('totalAlerts', newTotalAlerts);
+    // Use functional update to avoid stale closure issue
+    setTotalAlerts(prev => {
+      const newTotal = prev + 1;
+      saveSettings('totalAlerts', newTotal);
+      return newTotal;
+    });
 
     // Vibration alert with intensity and pattern
     if (vibrationEnabled) {
@@ -966,11 +1061,12 @@ export default function App() {
         else if (data.status === 'warning') status = POSTURE_STATUS.WARNING;
 
         setPostureStatus(status);
-        setCurrentPostureIssues(data.issues || []);
+        setCurrentPostureIssues(Array.isArray(data.issues) ? data.issues : []);
 
         // Handle good/bad posture logic
         if (status === POSTURE_STATUS.GOOD) {
           setGoodPostureTime(prev => prev + 1);
+          setSessionGoodPostureTime(prev => prev + 1);
         }
 
         if (status === POSTURE_STATUS.BAD) {
@@ -1119,6 +1215,9 @@ export default function App() {
         // Close result modal if open
         setShowSessionResult(false);
         setSessionTime(0);
+        setSessionGoodPostureTime(0); // Reset session-specific good posture time
+        setWarningCount(0); // Reset warning count for new session
+        setErrorCount(0); // Reset error count for new session
         setBadPostureCount(0);
         badPostureCountRef.current = 0; // Reset ref too
         setIsMonitoring(true);
@@ -1233,29 +1332,46 @@ export default function App() {
     <SafeAreaView style={styles.container}>
       <StatusBar style="light" />
 
-      {/* Header */}
+      {/* Header - Design: Left stats, Center title, Right settings */}
       <View style={styles.header}>
-        <View style={styles.headerLeft}>
-          <Text style={styles.headerTitle} accessibilityRole="header">{t.appName}</Text>
-          <Text style={styles.headerSubtitle}>{t.appSubtitle}</Text>
+        <TouchableOpacity
+          style={styles.headerButton}
+          onPress={() => setShowStats(true)}
+          accessibilityRole="button"
+          accessibilityLabel={t.statistics}
+        >
+          <Text style={styles.headerButtonIcon}>📊</Text>
+        </TouchableOpacity>
+        <Text style={styles.headerTitle} accessibilityRole="header">POSTURE GUARD</Text>
+        <TouchableOpacity
+          style={styles.headerButton}
+          onPress={() => setShowSettings(true)}
+          accessibilityRole="button"
+          accessibilityLabel={t.settings}
+        >
+          <Text style={styles.headerButtonIcon}>⚙️</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Stats Bar - warnings, errors, time, score */}
+      <View style={styles.statsBar}>
+        <View style={styles.statsBarItem}>
+          <Text style={styles.statsBarIcon}>⚠️</Text>
+          <Text style={styles.statsBarValue}>{warningCount || 0}</Text>
         </View>
-        <View style={styles.headerRight}>
-          <TouchableOpacity
-            style={styles.headerButton}
-            onPress={() => setShowStats(true)}
-            accessibilityRole="button"
-            accessibilityLabel={t.statistics}
-          >
-            <Text style={styles.headerButtonIcon}>📊</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.headerButton}
-            onPress={() => setShowSettings(true)}
-            accessibilityRole="button"
-            accessibilityLabel={t.settings}
-          >
-            <Text style={styles.headerButtonIcon}>⚙️</Text>
-          </TouchableOpacity>
+        <View style={styles.statsBarItem}>
+          <Text style={styles.statsBarIcon}>🔴</Text>
+          <Text style={styles.statsBarValue}>{errorCount || 0}</Text>
+        </View>
+        <View style={styles.statsBarDivider} />
+        <View style={styles.statsBarItem}>
+          <Text style={styles.statsBarIcon}>🕐</Text>
+          <Text style={styles.statsBarValue}>{formatTime(sessionTime)}</Text>
+        </View>
+        <View style={styles.statsBarDivider} />
+        <View style={styles.statsBarItem}>
+          <Text style={styles.statsBarIcon}>🏆</Text>
+          <Text style={styles.statsBarValue}>{goodPostureRate}%</Text>
         </View>
       </View>
 
@@ -1312,69 +1428,97 @@ export default function App() {
         )}
         {!webViewReady && (
           <View style={styles.loadingOverlay}>
-            <ActivityIndicator size="large" color="#6366F1" />
+            <ActivityIndicator size="large" color="#19e66b" />
             <Text style={styles.loadingText}>{t.loading}</Text>
           </View>
         )}
       </Animated.View>
 
-      {/* Compact Bottom Control Panel */}
+      {/* Bottom Control Panel - Sliders and Stop Button */}
       <View style={styles.bottomPanel}>
-        {/* Stats Row */}
-        <View style={styles.statsRow}>
-          <View style={styles.statItem}>
-            <Text style={styles.statValue}>{totalAlerts}</Text>
-            <Text style={styles.statLabel}>{t.alerts}</Text>
+        {/* Vibration Intensity Slider */}
+        <View style={styles.sliderGroup}>
+          <View style={styles.sliderLabelRow}>
+            <Text style={styles.sliderLabel}>📳 진동 세기</Text>
+            <Text style={styles.sliderValue}>{(vibrationIntensity / 1000).toFixed(1)}초</Text>
           </View>
-          <View style={styles.statItem}>
-            <Text style={styles.statValue}>{formatTime(sessionTime)}</Text>
-            <Text style={styles.statLabel}>{t.currentSession}</Text>
-          </View>
-          <View style={styles.statItem}>
-            <Text style={styles.statValue}>{sessionsCount}</Text>
-            <Text style={styles.statLabel}>{t.totalSessions}</Text>
-          </View>
+          <Slider
+            style={styles.slider}
+            minimumValue={CONFIG.VIBRATION_INTENSITY.MIN}
+            maximumValue={CONFIG.VIBRATION_INTENSITY.MAX}
+            step={CONFIG.VIBRATION_INTENSITY.STEP}
+            value={vibrationIntensity}
+            onValueChange={(value) => setVibrationIntensity(value)}
+            onSlidingComplete={(value) => saveSettings('vibrationIntensity', value)}
+            minimumTrackTintColor={COLORS.primary}
+            maximumTrackTintColor="rgba(255,255,255,0.2)"
+            thumbTintColor={COLORS.primary}
+          />
         </View>
 
-        {/* Main Button */}
+        {/* Screen Brightness (Flash) Toggle */}
+        <View style={styles.sliderGroup}>
+          <View style={styles.sliderLabelRow}>
+            <Text style={styles.sliderLabel}>💡 화면 경고</Text>
+            <Text style={styles.sliderValue}>{flashEnabled ? 'ON' : 'OFF'}</Text>
+          </View>
+          <Slider
+            style={styles.slider}
+            minimumValue={0}
+            maximumValue={1}
+            step={1}
+            value={flashEnabled ? 1 : 0}
+            onValueChange={(value) => {
+              const enabled = value === 1;
+              setFlashEnabled(enabled);
+              saveSettings('flashEnabled', enabled);
+            }}
+            minimumTrackTintColor={COLORS.primary}
+            maximumTrackTintColor="rgba(255,255,255,0.2)"
+            thumbTintColor={COLORS.primary}
+          />
+        </View>
+
+        {/* Alarm Frequency (Sensitivity) Slider */}
+        <View style={styles.sliderGroup}>
+          <View style={styles.sliderLabelRow}>
+            <Text style={styles.sliderLabel}>🎚️ 감지 민감도</Text>
+            <Text style={styles.sliderValue}>{Math.round(sensitivity * 100)}%</Text>
+          </View>
+          <Slider
+            style={styles.slider}
+            minimumValue={0.1}
+            maximumValue={0.5}
+            step={0.1}
+            value={sensitivity}
+            onValueChange={(value) => setSensitivity(Math.round(value * 10) / 10)}
+            onSlidingComplete={(value) => saveSettings('sensitivity', Math.round(value * 10) / 10)}
+            minimumTrackTintColor={COLORS.primary}
+            maximumTrackTintColor="rgba(255,255,255,0.2)"
+            thumbTintColor={COLORS.primary}
+          />
+        </View>
+
+        {/* Stop/Start Session Button */}
         <TouchableOpacity
           style={[
-            styles.mainButton,
-            { backgroundColor: isMonitoring ? COLORS.danger : COLORS.primary },
+            styles.stopButton,
+            !isMonitoring && styles.startButton,
             isProcessing && { opacity: 0.6 }
           ]}
           onPress={toggleMonitoring}
           activeOpacity={0.8}
           disabled={isProcessing}
         >
-          <Text style={styles.mainButtonText}>
-            {isMonitoring ? t.stopMonitoring : t.startMonitoring}
+          <Text style={styles.stopButtonIcon}>{isMonitoring ? '⏹' : '▶'}</Text>
+          <Text style={styles.stopButtonText}>
+            {isMonitoring ? 'STOP SESSION' : 'START SESSION'}
           </Text>
         </TouchableOpacity>
-
-        {/* Sensitivity Row */}
-        <View style={styles.sensitivityRow}>
-          <Text style={styles.sensitivityLabel}>{t.sensitivity}:</Text>
-          {[
-            { value: 0.1, label: t.low },
-            { value: 0.3, label: t.medium },
-            { value: 0.5, label: t.high }
-          ].map((item) => (
-            <TouchableOpacity
-              key={item.value}
-              style={[styles.sensButton, sensitivity === item.value && styles.sensButtonActive]}
-              onPress={() => { setSensitivity(item.value); saveSettings('sensitivity', item.value); }}
-            >
-              <Text style={[styles.sensButtonText, sensitivity === item.value && styles.sensButtonTextActive]}>
-                {item.label}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
       </View>
 
       {/* Ad Banner */}
-      <AdBanner />
+      {!hideAds && <AdBanner />}
 
       {/* Modals */}
       <SettingsModal
@@ -1410,6 +1554,11 @@ export default function App() {
         result={sessionResult}
         t={t}
       />
+      <PremiumModal
+        visible={showPremium}
+        onClose={() => setShowPremium(false)}
+        lang={lang}
+      />
 
       {/* Screen Flash Overlay - 화면 깜빡임 알림 */}
       {showFlashOverlay && (
@@ -1444,81 +1593,96 @@ const styles = StyleSheet.create({
   permissionNote: { fontSize: 14, color: COLORS.textMuted, textAlign: 'center', marginBottom: 32, lineHeight: 20 },
   permissionButton: { backgroundColor: COLORS.primary, paddingVertical: 16, paddingHorizontal: 40, borderRadius: 12 },
   permissionButtonText: { color: COLORS.text, fontSize: 18, fontWeight: 'bold' },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 4, paddingTop: Platform.OS === 'android' ? 28 : 4, position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10 },
-  headerLeft: {},
-  headerTitle: { fontSize: 14, fontWeight: 'bold', color: COLORS.text },
-  headerSubtitle: { fontSize: 9, color: COLORS.textMuted },
-  headerRight: { flexDirection: 'row', gap: 4 },
-  headerButton: { width: 32, height: 32, borderRadius: 8, backgroundColor: 'rgba(30,30,46,0.8)', justifyContent: 'center', alignItems: 'center' },
-  headerButtonIcon: { fontSize: 12 },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, paddingTop: Platform.OS === 'android' ? 48 : 12, position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10 },
+  headerTitle: { fontSize: 14, fontWeight: '700', color: COLORS.text, letterSpacing: 3, textTransform: 'uppercase' },
+  headerButton: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(26, 44, 34, 0.9)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  headerButtonIcon: { fontSize: 18 },
+  // Stats Bar - below header
+  statsBar: { position: 'absolute', top: Platform.OS === 'android' ? 100 : 70, left: 16, right: 16, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(26, 44, 34, 0.9)', borderRadius: 25, paddingVertical: 10, paddingHorizontal: 20, zIndex: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  statsBarItem: { flexDirection: 'row', alignItems: 'center', marginHorizontal: 8 },
+  statsBarIcon: { fontSize: 14, marginRight: 4 },
+  statsBarValue: { fontSize: 14, fontWeight: '600', color: COLORS.text },
+  statsBarDivider: { width: 1, height: 20, backgroundColor: 'rgba(255,255,255,0.2)', marginHorizontal: 8 },
   cameraContainer: { flex: 1, backgroundColor: '#000' },
   camera: { flex: 1 },
-  statusOverlay: { flex: 1, borderWidth: 4, borderRadius: 20, justifyContent: 'space-between', alignItems: 'center', padding: 16 },
-  statusBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 24 },
-  statusEmoji: { fontSize: 24, marginRight: 8 },
-  statusText: { fontSize: 16, fontWeight: 'bold', color: COLORS.text },
-  sessionInfo: { backgroundColor: COLORS.overlay, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 12, alignItems: 'center' },
-  sessionTimeLabel: { fontSize: 10, color: COLORS.textSecondary, marginBottom: 2 },
-  sessionTime: { fontSize: 20, color: COLORS.text, fontWeight: 'bold' },
+  statusOverlay: { flex: 1, borderWidth: 2, borderRadius: 20, justifyContent: 'space-between', alignItems: 'center', padding: 16 },
+  statusBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 20, backgroundColor: 'rgba(17, 33, 23, 0.7)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  statusEmoji: { fontSize: 18, marginRight: 8 },
+  statusText: { fontSize: 12, fontWeight: 'bold', color: COLORS.text },
+  sessionInfo: { backgroundColor: 'rgba(17, 33, 23, 0.7)', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 20, alignItems: 'center', flexDirection: 'row', gap: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  sessionTimeLabel: { fontSize: 14, color: COLORS.textMuted },
+  sessionTime: { fontSize: 12, color: COLORS.text, fontWeight: 'bold', fontFamily: 'monospace' },
   guideOverlay: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: COLORS.overlayStrong },
   guideEmoji: { fontSize: 56, marginBottom: 16 },
   guideText: { fontSize: 18, color: COLORS.text, textAlign: 'center', lineHeight: 26, fontWeight: '500' },
   guideHint: { fontSize: 13, color: COLORS.textMuted, marginTop: 12, textAlign: 'center' },
-  bottomPanel: { backgroundColor: COLORS.surface, paddingHorizontal: 12, paddingVertical: 8, borderTopLeftRadius: 16, borderTopRightRadius: 16 },
-  statsRow: { flexDirection: 'row', justifyContent: 'space-around', marginBottom: 8 },
-  statItem: { alignItems: 'center' },
-  statValue: { fontSize: 14, fontWeight: 'bold', color: COLORS.text },
-  statLabel: { fontSize: 9, color: COLORS.textMuted },
-  mainButton: { alignItems: 'center', justifyContent: 'center', paddingVertical: 10, borderRadius: 10, marginBottom: 8 },
-  mainButtonText: { color: COLORS.text, fontSize: 14, fontWeight: 'bold' },
-  sensitivityRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
-  sensitivityLabel: { fontSize: 10, color: COLORS.textMuted, marginRight: 4 },
-  sensButton: { paddingVertical: 4, paddingHorizontal: 12, borderRadius: 6, backgroundColor: COLORS.surfaceLight },
-  sensButtonActive: { backgroundColor: COLORS.primary },
-  sensButtonText: { fontSize: 10, color: COLORS.textSecondary },
-  sensButtonTextActive: { color: COLORS.text, fontWeight: 'bold' },
+  bottomPanel: { backgroundColor: 'rgba(26, 44, 34, 0.9)', paddingHorizontal: 20, paddingVertical: 16, borderTopLeftRadius: 24, borderTopRightRadius: 24, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', borderBottomWidth: 0 },
+  // Slider styles
+  sliderGroup: { marginBottom: 4 },
+  sliderLabelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 4, marginBottom: -4 },
+  sliderLabel: { fontSize: 13, color: COLORS.textMuted, fontWeight: '500' },
+  sliderValue: { fontSize: 13, color: COLORS.primary, fontWeight: '600' },
+  slider: { flex: 1, height: 36 },
+  // Stop/Start button
+  stopButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(26, 44, 34, 0.8)', paddingVertical: 14, borderRadius: 12, marginTop: 8, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  startButton: { backgroundColor: COLORS.primary },
+  stopButtonIcon: { fontSize: 16, marginRight: 8 },
+  stopButtonText: { fontSize: 14, fontWeight: '700', color: COLORS.text, letterSpacing: 1 },
+  // Legacy styles (kept for compatibility)
+  statsRow: { flexDirection: 'row', justifyContent: 'space-around', marginBottom: 12, backgroundColor: 'rgba(17, 33, 23, 0.5)', borderRadius: 20, paddingVertical: 10, paddingHorizontal: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  statItem: { alignItems: 'center', flexDirection: 'row', gap: 6 },
+  statValue: { fontSize: 12, fontWeight: 'bold', color: COLORS.text, fontFamily: 'monospace' },
+  statLabel: { fontSize: 14, color: COLORS.textMuted },
+  mainButton: { alignItems: 'center', justifyContent: 'center', paddingVertical: 12, borderRadius: 12, marginBottom: 8, flexDirection: 'row', gap: 8, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  mainButtonText: { color: COLORS.text, fontSize: 12, fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: 1 },
+  sensitivityRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  sensitivityLabel: { fontSize: 14, color: COLORS.textMuted, marginRight: 4 },
+  sensButton: { paddingVertical: 6, paddingHorizontal: 14, borderRadius: 8, backgroundColor: 'rgba(17, 33, 23, 0.5)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  sensButtonActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  sensButtonText: { fontSize: 11, color: COLORS.textSecondary },
+  sensButtonTextActive: { color: COLORS.background, fontWeight: 'bold' },
   adContainer: { alignItems: 'center', backgroundColor: COLORS.background, paddingBottom: Platform.OS === 'ios' ? 0 : 8 },
-  modalOverlay: { flex: 1, backgroundColor: COLORS.overlayStrong, justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: COLORS.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '80%' },
-  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderBottomWidth: 1, borderBottomColor: COLORS.border },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },
+  modalContent: { backgroundColor: 'rgba(17, 33, 23, 0.95)', borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '80%', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', borderBottomWidth: 0 },
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.08)' },
   modalTitle: { fontSize: 20, fontWeight: 'bold', color: COLORS.text },
-  modalCloseButton: { width: 48, height: 48, borderRadius: 24, backgroundColor: COLORS.surfaceLight, justifyContent: 'center', alignItems: 'center' },
+  modalCloseButton: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.1)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
   modalCloseText: { fontSize: 16, color: COLORS.textSecondary },
   modalBody: { padding: 20 },
   settingsSection: { marginBottom: 24 },
   sectionTitle: { fontSize: 16, fontWeight: 'bold', color: COLORS.text, marginBottom: 4 },
   sectionDescription: { fontSize: 13, color: COLORS.textMuted, marginBottom: 12 },
   sensitivityContainer: { flexDirection: 'row', gap: 8 },
-  sensitivityOption: { flex: 1, paddingVertical: 14, paddingHorizontal: 12, borderRadius: 12, backgroundColor: COLORS.surfaceLight, alignItems: 'center' },
-  sensitivityOptionActive: { backgroundColor: COLORS.primary },
+  sensitivityOption: { flex: 1, paddingVertical: 14, paddingHorizontal: 12, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  sensitivityOptionActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
   sensitivityLabel: { fontSize: 15, fontWeight: '600', color: COLORS.textSecondary, marginBottom: 2 },
   sensitivityLabelActive: { color: COLORS.text },
   sensitivityDesc: { fontSize: 11, color: COLORS.textMuted },
   sensitivityDescActive: { color: COLORS.text, opacity: 0.8 },
-  settingsList: { backgroundColor: COLORS.surfaceLight, borderRadius: 12, overflow: 'hidden' },
-  settingItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, borderBottomWidth: 1, borderBottomColor: COLORS.border },
+  settingsList: { backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  settingItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.08)' },
   settingItemLast: { borderBottomWidth: 0 },
   settingTextContainer: { flex: 1, marginRight: 12 },
   settingLabel: { fontSize: 15, color: COLORS.text, fontWeight: '500' },
   settingDescription: { fontSize: 12, color: COLORS.textMuted, marginTop: 2 },
-  infoButton: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: COLORS.surfaceLight, borderRadius: 12, padding: 16 },
+  infoButton: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 12, padding: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
   infoButtonText: { fontSize: 15, color: COLORS.text },
   infoButtonArrow: { fontSize: 20, color: COLORS.textMuted },
   appInfo: { marginTop: 16, alignItems: 'center' },
   appInfoText: { fontSize: 12, color: COLORS.textMuted },
   statsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
-  statCard: { width: '47%', backgroundColor: COLORS.surfaceLight, borderRadius: 16, padding: 16, borderLeftWidth: 4 },
+  statCard: { width: '47%', backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 16, padding: 16, borderLeftWidth: 4, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
   statIcon: { fontSize: 24, marginBottom: 8 },
   statValue: { fontSize: 24, fontWeight: 'bold', color: COLORS.text, marginBottom: 4 },
   statLabel: { fontSize: 12, color: COLORS.textMuted },
-  statsNote: { marginTop: 20, padding: 16, backgroundColor: COLORS.surfaceLight, borderRadius: 12, alignItems: 'center' },
+  statsNote: { marginTop: 20, padding: 16, backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 12, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
   statsNoteText: { fontSize: 14, color: COLORS.textSecondary, textAlign: 'center' },
   webViewOverlay: { position: 'absolute', bottom: 0, left: 0, right: 0, padding: 12, alignItems: 'center' },
   issuesContainer: { backgroundColor: COLORS.overlay, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 10, marginTop: 8 },
   issuesText: { fontSize: 12, color: COLORS.text, fontWeight: '500' },
   loadingOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: COLORS.overlayStrong, justifyContent: 'center', alignItems: 'center' },
-  resultModalOverlay: { flex: 1, backgroundColor: COLORS.overlayStrong, justifyContent: 'center', alignItems: 'center', padding: 24 },
-  resultModalContent: { backgroundColor: COLORS.surface, borderRadius: 24, padding: 32, alignItems: 'center', width: '100%', maxWidth: 320 },
+  resultModalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'center', alignItems: 'center', padding: 24 },
+  resultModalContent: { backgroundColor: 'rgba(17, 33, 23, 0.95)', borderRadius: 24, padding: 32, alignItems: 'center', width: '100%', maxWidth: 320, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
   resultEmoji: { fontSize: 64, marginBottom: 16 },
   resultTitle: { fontSize: 24, fontWeight: 'bold', color: COLORS.text, marginBottom: 24 },
   resultStats: { width: '100%', marginBottom: 20 },
@@ -1529,19 +1693,19 @@ const styles = StyleSheet.create({
   resultCloseButton: { backgroundColor: COLORS.primary, paddingVertical: 14, paddingHorizontal: 48, borderRadius: 12 },
   resultCloseButtonText: { color: COLORS.text, fontSize: 16, fontWeight: 'bold' },
   // Pattern selector styles
-  patternSection: { paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: COLORS.border },
+  patternSection: { paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.08)' },
   patternTitle: { fontSize: 13, color: COLORS.textMuted, marginBottom: 8 },
   patternContainer: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  patternOption: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 8, backgroundColor: COLORS.surfaceLight, minWidth: 60, alignItems: 'center' },
-  patternOptionActive: { backgroundColor: COLORS.primary },
+  patternOption: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.05)', minWidth: 60, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  patternOptionActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
   patternLabel: { fontSize: 12, color: COLORS.textSecondary, fontWeight: '500' },
   patternLabelActive: { color: COLORS.text },
   // Intensity selector styles
   intensityContainer: { marginBottom: 8 },
   intensityLabel: { fontSize: 13, color: COLORS.textMuted, marginBottom: 8 },
   intensityButtons: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
-  intensityButton: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8, backgroundColor: COLORS.surfaceLight, minWidth: 44, alignItems: 'center' },
-  intensityButtonActive: { backgroundColor: COLORS.primary },
+  intensityButton: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.05)', minWidth: 44, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  intensityButtonActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
   intensityButtonText: { fontSize: 12, color: COLORS.textSecondary, fontWeight: '600' },
   intensityButtonTextActive: { color: COLORS.text },
   intensityHint: { fontSize: 11, color: COLORS.textMuted, marginTop: 6, textAlign: 'center' },
@@ -1560,7 +1724,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: Platform.OS === 'android' ? 60 : 50,
     right: 10,
-    backgroundColor: 'rgba(99, 102, 241, 0.9)',
+    backgroundColor: 'rgba(25, 230, 107, 0.9)',
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 12,
