@@ -2,7 +2,7 @@
   "expo": {
     "name": "Posture Guard",
     "slug": "posture-guard",
-    "version": "1.5.1",
+    "version": "1.5.3",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -31,7 +31,7 @@
         "backgroundColor": "#19e66b"
       },
       "package": "com.allofdaniel.postureguard",
-      "versionCode": 31,
+      "versionCode": 33,
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.VIBRATE",
@@ -71,8 +71,7 @@
       [
         "react-native-google-mobile-ads",
         {
-          "androidAppId": "ca-app-pub-7278941489904900~6411429869",
-          "iosAppId": "ca-app-pub-xxxxxxxxxxxxxxxx~yyyyyyyyyy"
+          "androidAppId": "ca-app-pub-7278941489904900~6411429869"
         }
       ]
     ],

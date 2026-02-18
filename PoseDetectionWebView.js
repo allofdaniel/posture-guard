@@ -11,7 +11,7 @@ export const POSE_DETECTION_HTML = `
     #container { position: relative; width: 100%; height: 100%; }
     #video { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); z-index: 1; }
     #canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; transform: scaleX(-1); }
-    #status { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); padding: 8px 16px; border-radius: 20px; font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 14px; font-weight: 600; z-index: 100; opacity: 0.9; }
+    #status { display: none; }
     .loading { background: rgba(255, 255, 255, 0.9); color: #333; }
     .good { background: rgba(16, 185, 129, 0.9); color: white; }
     .warning { background: rgba(245, 158, 11, 0.9); color: white; }
@@ -38,7 +38,21 @@ export const POSE_DETECTION_HTML = `
     </div>
     <div id="debug-log"></div>
   </div>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+  <script>
+    // CDN fallback URLs for MediaPipe
+    const MEDIAPIPE_CDNS = [
+      'https://cdn.jsdelivr.net/npm/@mediapipe/pose/',
+      'https://unpkg.com/@mediapipe/pose@0.5.1675469404/',
+      'https://cdn.skypack.dev/@mediapipe/pose'
+    ];
+    let currentCdnIndex = 0;
+    function getMediaPipeCdn() { return MEDIAPIPE_CDNS[currentCdnIndex]; }
+    function tryNextCdn() {
+      currentCdnIndex = (currentCdnIndex + 1) % MEDIAPIPE_CDNS.length;
+      return currentCdnIndex !== 0; // returns false if we've tried all
+    }
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous" onerror="console.error('MediaPipe CDN load failed')"></script>
   <script>
     (function() {
       let pose, video, canvas, ctx, calibPose, isMonitoring = false, sens = 1.0, simMode = false, privacyMode = false;
@@ -511,6 +525,12 @@ export const POSE_DETECTION_HTML = `
         return false;
       }
 
+      // Expose restartCam globally so native code can restart camera after PiP
+      window.restartCam = function() {
+        retryCount = 0;
+        return startCam();
+      };
+
       async function init() {
         log("Initializing...");
         video = document.getElementById("video");
@@ -526,7 +546,7 @@ export const POSE_DETECTION_HTML = `
 
         try {
           pose = new Pose({
-            locateFile: (f) => "https://cdn.jsdelivr.net/npm/@mediapipe/pose/" + f
+            locateFile: (f) => getMediaPipeCdn() + f
           });
 
           pose.setOptions({
@@ -571,6 +591,32 @@ export const POSE_DETECTION_HTML = `
           })(0);
         } catch (e) {
           log("AI load error: " + e.message);
+          // Try next CDN if available
+          if (tryNextCdn()) {
+            log("Trying fallback CDN: " + getMediaPipeCdn());
+            try {
+              pose = new Pose({
+                locateFile: (f) => getMediaPipeCdn() + f
+              });
+              pose.setOptions({
+                modelComplexity: 1,
+                smoothLandmarks: true,
+                enableSegmentation: true,
+                smoothSegmentation: true,
+                minDetectionConfidence: 0.3,
+                minTrackingConfidence: 0.3
+              });
+              pose.onResults(onResults);
+              await pose.initialize();
+              statusEl.textContent = "Ready";
+              statusEl.className = "good";
+              sendRN({type: "ready", simulation: false});
+              log("Fallback CDN succeeded");
+              return;
+            } catch (e2) {
+              log("Fallback CDN failed: " + e2.message);
+            }
+          }
           startSim();
         }
       }

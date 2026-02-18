@@ -38,7 +38,7 @@ yarn-error.*
 
 # generated native folders
 /ios
-/android
+# /android - tracking android folder for custom native modules (TorchModule, PipModule, etc.)
 
 # Credentials and secrets - NEVER commit these!
 google-service-account.json
@@ -55,6 +55,13 @@ service-account*.json
 # Build outputs
 *.apk
 *.aab
+
+# Android build outputs
+android/.gradle/
+android/app/build/
+android/build/
+android/.idea/
+android/local.properties
 
 # Temp files
 keystore_b64.txt

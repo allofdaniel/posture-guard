@@ -1,22 +1,22 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
-  StyleSheet,
   Text,
   View,
   TouchableOpacity,
   Pressable,
   SafeAreaView,
+  ScrollView,
+  StyleSheet,
   Platform,
   Alert,
-  Switch,
   AppState,
-  Modal,
-  ScrollView,
   Animated,
   useWindowDimensions,
-  Linking,
   ActivityIndicator,
   Vibration,
+  DeviceEventEmitter,
+  Linking,
+  NativeModules,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { useCameraPermissions } from 'expo-camera';
@@ -25,267 +25,43 @@ import { POSE_DETECTION_HTML } from './PoseDetectionWebView';
 import * as Haptics from 'expo-haptics';
 import * as Notifications from 'expo-notifications';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as Localization from 'expo-localization';
 import AdBanner from './AdBanner';
-import Torch from 'react-native-torch';
+// Custom Torch Module (Kotlin native)
+const { TorchModule } = NativeModules;
+const Torch = {
+  switchState: async (state) => {
+    if (TorchModule) {
+      return TorchModule.switchState(state);
+    }
+    throw new Error('TorchModule not available');
+  }
+};
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { Audio } from 'expo-av';
-import { isPipSupported, enterPipMode } from './PipModule';
+// PIP 기능 비활성화 - 정확도 이슈로 제거
+// import { isPipSupported, enterPipMode, setAutoEnterPip, isInPipMode as checkPipMode, updatePipStatus } from './PipModule';
 import { updateWidget } from './WidgetModule';
 import PremiumModal from './PremiumModal';
 import { initializePremium, isAdFree, cleanupPremium } from './PremiumManager';
 import Slider from '@react-native-community/slider';
-// import NativeCamera from './NativeCamera'; // Disabled - ML Kit plugins have compatibility issues
-// import backgroundService from './BackgroundService'; // Disabled
 
-// Constants for configuration
-const CONFIG = {
-  SENSITIVITY_LEVELS: { LOW: 0.1, MEDIUM: 0.3, HIGH: 0.5 },
-  MONITORING_INTERVAL: 3000,  // 3 seconds
-  SESSION_INTERVAL: 1000,     // 1 second
-  GOOD_POSTURE_INCREMENT: 3,  // seconds
-  BAD_POSTURE_THRESHOLD: 2,   // count before alert
-  BUTTON_DEBOUNCE: 500,       // ms
-  POSTURE_THRESHOLD: {
-    BAD_BASE: 0.15,
-    BAD_MULTIPLIER: 0.1,
-    WARNING_BASE: 0.3,
-    WARNING_MULTIPLIER: 0.15,
-  },
-  VALIDATION_LIMITS: {
-    TOTAL_ALERTS: 1000000,
-    SESSION_TIME: 86400 * 365,  // 1 year in seconds
-    SESSIONS_COUNT: 100000,
-  },
-  // Vibration intensity levels (duration in ms) - 더 넓은 범위로 조절 가능
-  VIBRATION_INTENSITY: {
-    MIN: 100,      // 최소 0.1초
-    MAX: 2000,     // 최대 2초
-    DEFAULT: 800,  // 기본값 0.8초
-    STEP: 100,     // 0.1초 단위로 조절
-  },
-  // Vibration patterns: [wait, vibrate, wait, vibrate, ...] - 첫 번째는 대기시간!
-  VIBRATION_PATTERNS: {
-    single: (intensity) => [0, intensity, 100, intensity],                    // 즉시 시작, 2회 진동
-    double: (intensity) => [0, intensity, 100, intensity, 100, intensity, 100, intensity],    // 4회 진동
-    triple: (intensity) => [0, intensity, 80, intensity, 80, intensity, 80, intensity, 80, intensity, 80, intensity], // 6회 진동
-  },
-  // Flash patterns: [on_ms, off_ms, ...] - for camera torch (더 길고 눈에 띄게)
-  FLASH_PATTERNS: {
-    single: [500, 0],                      // 1회 깜빡임 (0.5초)
-    double: [400, 200, 400, 0],            // 2회 깜빡임
-    triple: [300, 150, 300, 150, 300, 0],  // 3회 깜빡임
-    rapid: [200, 100, 200, 100, 200, 100, 200, 100, 200, 0], // 빠른 5회 깜빡임
-    pulse: [800, 400, 800, 0],             // 느린 펄스
-  },
-};
+// Import modular components
+import {
+  CONFIG,
+  COLORS,
+  POSTURE_STATUS,
+  TRANSLATIONS,
+  getDeviceLanguage,
+  styles,
+  OnboardingScreen,
+  PermissionScreen,
+  SettingsModal,
+  StatsModal,
+  SessionResultModal,
+  DeskClock,
+} from './components';
 
-// Internationalization - English as default, Korean as secondary
-const TRANSLATIONS = {
-  en: {
-    appName: 'Posture Guard',
-    appSubtitle: 'Stay healthy with good posture',
-    onboarding: [
-      { title: 'Posture Guard', description: 'Build healthy posture habits\nfor a better daily life', icon: '🧘' },
-      { title: 'Visual Reminder', description: 'Use camera as a mirror\nwith timed posture reminders', icon: '📱' },
-      { title: 'Custom Alerts', description: 'Choose vibration or sound alerts\nand adjust reminder frequency', icon: '🔔' },
-    ],
-    next: 'Next',
-    getStarted: 'Get Started',
-    skip: 'Skip',
-    pageOfTotal: 'Page {current} of {total}',
-    cameraPermissionTitle: 'Camera Permission Required',
-    cameraPermissionText: 'Camera is used as a mirror\nto help you check your posture.',
-    cameraPermissionNote: 'Video is displayed locally as a visual reference\nand never recorded or sent externally.',
-    allowPermission: 'Allow Permission',
-    openSettings: 'Open Settings',
-    permissionDeniedNote: 'Permission was denied. Please enable camera access in Settings.',
-    loading: 'Loading...',
-    checkingPermission: 'Checking permission...',
-    settings: 'Settings',
-    statistics: 'Statistics',
-    sensitivity: 'Reminder Frequency',
-    sensitivityDesc: 'Higher frequency gives more frequent posture reminders',
-    low: 'Low',
-    medium: 'Medium',
-    high: 'High',
-    relaxed: 'Relaxed',
-    recommended: 'Recommended',
-    strict: 'Strict',
-    alertSettings: 'Alert Settings',
-    vibrationAlert: 'Vibration Alert',
-    vibrationAlertDesc: 'Vibrate when reminder activates',
-    vibrationIntensity: 'Vibration Intensity',
-    vibrationIntensityDesc: 'Adjust vibration strength',
-    vibrationPattern: 'Vibration Pattern',
-    vibrationPatternDesc: 'Choose vibration style',
-    vibrationPatterns: {
-      single: '1x',
-      double: '2x',
-      triple: '3x',
-    },
-    flashAlert: 'Camera Flash Alert',
-    flashAlertDesc: 'Flash camera light when reminder activates',
-    flashPattern: 'Flash Pattern',
-    flashPatternDesc: 'Choose flash style',
-    flashPatterns: {
-      single: 'Single',
-      double: 'Double',
-      triple: 'Triple',
-      rapid: 'Rapid',
-      pulse: 'Pulse',
-    },
-    pushAlert: 'Push Notification',
-    pushAlertDesc: 'Show notification at top of screen',
-    info: 'Information',
-    privacyPolicy: 'Privacy Policy',
-    version: 'Posture Guard v1.2.0',
-    totalAlerts: 'Total Alerts',
-    totalMonitoringTime: 'Total Monitoring Time',
-    sessionCount: 'Session Count',
-    goodPostureRate: 'Good Posture Rate',
-    statsNote: 'Build healthy posture habits with regular use!',
-    alerts: 'Alerts',
-    currentSession: 'Current Session',
-    totalSessions: 'Total Sessions',
-    startMonitoring: 'Start Monitoring',
-    stopMonitoring: 'Stop Monitoring',
-    sessionTime: 'Session Time',
-    guideText: 'Press start button\nto begin posture reminders',
-    guideHint: 'Use the camera as a mirror to check your posture',
-    goodPosture: 'Good Posture',
-    warning: 'Caution',
-    needCorrection: 'Check Your Posture!',
-    alertTitle: 'Time to Check Your Posture!',
-    alertBody: 'Take a moment to check and correct your posture.',
-    privacyPolicyContent: 'Privacy Policy & Disclaimer\n\nDATA COLLECTION\n• Camera: Used as a mirror only, never recorded or transmitted\n• Usage stats: Session counts and times stored locally on device\n• Advertising: Google Mobile Ads may use anonymized device ID\n\nDATA STORAGE\n• All data stored locally on your device\n• No external servers or cloud storage used\n• You can clear data anytime via device settings\n\nYOUR RIGHTS\n• Access, modify, or delete your data anytime\n• Disable notifications in app settings\n• Opt-out of personalized ads in device settings\n\nDISCLAIMER\nThis app is NOT a medical device. It provides timed reminders only and does not diagnose, treat, or prevent any medical condition. Consult healthcare professionals for medical concerns.\n\nContact: allofdaniel@gmail.com',
-    ok: 'OK',
-    times: 'times',
-    sessionComplete: 'Session Complete',
-    sessionSummary: 'Session Summary',
-    alertsReceived: 'Alerts Received',
-    duration: 'Duration',
-    close: 'Close',
-    greatJob: 'Great job! Keep up the good posture!',
-    needsImprovement: 'Try to maintain better posture next time!',
-  },
-  ko: {
-    appName: '자세 알리미',
-    appSubtitle: '바른 자세로 건강하게',
-    onboarding: [
-      { title: '자세 알리미', description: '바른 자세 습관을 만들어\n건강한 일상을 시작하세요', icon: '🧘' },
-      { title: '자세 확인 거울', description: '카메라를 거울처럼 사용하고\n주기적으로 자세 알림을 받아요', icon: '📱' },
-      { title: '맞춤 알림 설정', description: '진동, 소리 알림을 선택하고\n민감도를 조절할 수 있어요', icon: '🔔' },
-    ],
-    next: '다음',
-    getStarted: '시작하기',
-    skip: '건너뛰기',
-    pageOfTotal: '페이지 {current} / {total}',
-    cameraPermissionTitle: '카메라 권한 필요',
-    cameraPermissionText: '카메라를 거울처럼 사용하여\n자세를 확인할 수 있습니다.',
-    cameraPermissionNote: '촬영된 영상은 기기에서만 처리되며\n외부로 전송되지 않습니다.',
-    allowPermission: '권한 허용하기',
-    openSettings: '설정 열기',
-    permissionDeniedNote: '권한이 거부되었습니다. 설정에서 카메라 권한을 허용해주세요.',
-    loading: '로딩 중...',
-    checkingPermission: '권한 확인 중...',
-    settings: '설정',
-    statistics: '통계',
-    sensitivity: '알림 빈도',
-    sensitivityDesc: '빈도가 높을수록 자세 확인 알림을 더 자주 받습니다',
-    low: '낮음',
-    medium: '중간',
-    high: '높음',
-    relaxed: '여유있게',
-    recommended: '권장',
-    strict: '엄격하게',
-    alertSettings: '알림 설정',
-    vibrationAlert: '진동 알림',
-    vibrationAlertDesc: '자세 확인 시간에 진동으로 알림',
-    vibrationIntensity: '진동 강도',
-    vibrationIntensityDesc: '진동 세기 조절',
-    vibrationPattern: '진동 패턴',
-    vibrationPatternDesc: '진동 횟수 선택',
-    vibrationPatterns: {
-      single: '1회',
-      double: '2회',
-      triple: '3회',
-    },
-    flashAlert: '카메라 플래시 알림',
-    flashAlertDesc: '카메라 플래시로 알림',
-    flashPattern: '깜빡임 패턴',
-    flashPatternDesc: '깜빡임 스타일 선택',
-    flashPatterns: {
-      single: '1회',
-      double: '2회',
-      triple: '3회',
-      rapid: '빠르게',
-      pulse: '느리게',
-    },
-    pushAlert: '푸시 알림',
-    pushAlertDesc: '화면 상단에 알림 표시',
-    info: '정보',
-    privacyPolicy: '개인정보처리방침',
-    version: '자세 알리미 v1.2.0',
-    totalAlerts: '총 알림 횟수',
-    totalMonitoringTime: '총 모니터링 시간',
-    sessionCount: '세션 횟수',
-    goodPostureRate: '바른 자세 비율',
-    statsNote: '꾸준한 사용으로 바른 자세 습관을 만들어보세요!',
-    alerts: '알림',
-    currentSession: '현재 세션',
-    totalSessions: '총 세션',
-    startMonitoring: '모니터링 시작',
-    stopMonitoring: '모니터링 중지',
-    sessionTime: '세션 시간',
-    guideText: '시작 버튼을 눌러\n자세 알림을 시작하세요',
-    guideHint: '카메라를 거울처럼 사용해 자세를 확인하세요',
-    goodPosture: '좋은 자세',
-    warning: '주의',
-    needCorrection: '자세 확인 필요!',
-    alertTitle: '자세 확인 시간!',
-    alertBody: '잠시 멈추고 자세를 확인해보세요.',
-    privacyPolicyContent: '개인정보처리방침 및 면책조항\n\n데이터 수집\n• 카메라: 거울처럼 화면에만 표시되며, 녹화나 전송되지 않습니다\n• 사용 통계: 세션 횟수와 시간이 기기에만 저장됩니다\n• 광고: Google Mobile Ads가 익명화된 기기 ID를 사용할 수 있습니다\n\n데이터 저장\n• 모든 데이터는 사용자 기기에만 저장됩니다\n• 외부 서버나 클라우드 저장소를 사용하지 않습니다\n• 기기 설정에서 언제든 데이터를 삭제할 수 있습니다\n\n사용자 권리\n• 언제든 데이터에 접근, 수정, 삭제할 수 있습니다\n• 앱 설정에서 알림을 끌 수 있습니다\n• 기기 설정에서 맞춤 광고를 거부할 수 있습니다\n\n면책조항\n이 앱은 의료기기가 아닙니다. 주기적인 자세 확인 알림만 제공하며, 어떠한 의료 상태도 진단, 치료, 예방하지 않습니다. 의료 관련 사항은 전문 의료인과 상담하세요.\n\n문의: allofdaniel@gmail.com',
-    ok: '확인',
-    times: '회',
-    sessionComplete: '세션 완료',
-    sessionSummary: '세션 요약',
-    alertsReceived: '받은 알림',
-    duration: '시간',
-    close: '닫기',
-    greatJob: '잘하셨어요! 바른 자세를 유지하세요!',
-    needsImprovement: '다음엔 더 바른 자세를 유지해보세요!',
-  },
-};
-
-// Get device locale and set language (default to English)
-const getDeviceLanguage = () => {
-  try {
-    const locale = Localization.locale || 'en';
-    const langCode = locale.split('-')[0].toLowerCase();
-    return TRANSLATIONS[langCode] ? langCode : 'en';
-  } catch {
-    return 'en';
-  }
-};
-
-const COLORS = {
-  primary: '#19e66b',
-  primaryDark: '#15c95c',
-  success: '#10B981',
-  warning: '#F59E0B',
-  danger: '#EF4444',
-  background: '#112117',
-  surface: '#1a2c22',
-  surfaceLight: '#2a3d30',
-  text: '#F8FAFC',
-  textSecondary: '#94A3B8',
-  textMuted: '#64748B',
-  border: '#3d5446',
-  overlay: 'rgba(0,0,0,0.6)',
-  overlayStrong: 'rgba(0,0,0,0.7)',
-};
-
+// Set up notification handler
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
@@ -294,100 +70,42 @@ Notifications.setNotificationHandler({
   }),
 });
 
-const POSTURE_STATUS = { GOOD: 'good', WARNING: 'warning', BAD: 'bad' };
+// Component definitions have been moved to ./components/
 
-const OnboardingScreen = React.memo(({ onComplete, t }) => {
-  const [currentPage, setCurrentPage] = useState(0);
-  const fadeAnim = useRef(new Animated.Value(1)).current;
-
-  const handleNext = useCallback(() => {
-    if (currentPage < t.onboarding.length - 1) {
-      Animated.sequence([
-        Animated.timing(fadeAnim, { toValue: 0, duration: 150, useNativeDriver: true }),
-        Animated.timing(fadeAnim, { toValue: 1, duration: 150, useNativeDriver: true }),
-      ]).start();
-      setCurrentPage(prev => prev + 1);
-    } else {
-      onComplete();
-    }
-  }, [currentPage, fadeAnim, onComplete, t.onboarding.length]);
-
-  const data = t.onboarding[currentPage];
-
-  return (
-    <SafeAreaView style={styles.onboardingContainer}>
-      <StatusBar style="light" />
-      <Animated.View style={[styles.onboardingContent, { opacity: fadeAnim }]}>
-        <Text style={styles.onboardingIcon} accessibilityLabel={data.title}>{data.icon}</Text>
-        <Text style={styles.onboardingTitle} accessibilityRole="header">{data.title}</Text>
-        <Text style={styles.onboardingDescription}>{data.description}</Text>
-      </Animated.View>
-      <View style={styles.onboardingFooter}>
-        <View style={styles.onboardingDots} accessibilityLabel={t.pageOfTotal.replace('{current}', currentPage + 1).replace('{total}', t.onboarding.length)}>
-          {t.onboarding.map((_, index) => (
-            <View key={index} style={[styles.onboardingDot, index === currentPage && styles.onboardingDotActive]} />
-          ))}
-        </View>
-        <TouchableOpacity
-          style={styles.onboardingButton}
-          onPress={handleNext}
-          accessibilityRole="button"
-          accessibilityLabel={currentPage < t.onboarding.length - 1 ? t.next : t.getStarted}
-        >
-          <Text style={styles.onboardingButtonText}>
-            {currentPage < t.onboarding.length - 1 ? t.next : t.getStarted}
-          </Text>
-        </TouchableOpacity>
-        {currentPage < t.onboarding.length - 1 && (
-          <TouchableOpacity
-            style={styles.skipButton}
-            onPress={onComplete}
-            accessibilityRole="button"
-            accessibilityLabel={t.skip}
-          >
-            <Text style={styles.skipButtonText}>{t.skip}</Text>
-          </TouchableOpacity>
-        )}
-      </View>
-    </SafeAreaView>
-
-  );
-});
-
-const PermissionScreen = React.memo(({ onRequestPermission, isDenied, t }) => {
+// Combined welcome screen - onboarding + permission in one step
+const _WelcomeScreen = React.memo(({ onStart, needsPermission, isDenied, t }) => {
   const handleOpenSettings = useCallback(() => {
     Linking.openSettings();
   }, []);
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.onboardingContainer}>
       <StatusBar style="light" />
-      <View style={styles.permissionContent}>
-        <View style={styles.permissionIconContainer}>
-          <Text style={styles.permissionIcon} accessibilityLabel={t.cameraPermissionTitle}>📷</Text>
+      <View style={styles.onboardingContent}>
+        <Text style={styles.onboardingIcon}>🧘</Text>
+        <Text style={styles.onboardingTitle}>{t.appName}</Text>
+        <Text style={styles.onboardingDescription}>{t.appSubtitle}</Text>
+        <View style={{ marginTop: 24, gap: 12, width: '100%', paddingHorizontal: 20 }}>
+          {t.onboarding.map((item, i) => (
+            <View key={i} style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+              <Text style={{ fontSize: 24 }}>{item.icon}</Text>
+              <Text style={{ color: '#ccc', fontSize: 14, flex: 1 }}>{item.title}</Text>
+            </View>
+          ))}
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+            <Text style={{ fontSize: 24 }}>📷</Text>
+            <Text style={{ color: '#999', fontSize: 12, flex: 1 }}>{t.cameraPermissionNote}</Text>
+          </View>
         </View>
-        <Text style={styles.permissionTitle} accessibilityRole="header">{t.cameraPermissionTitle}</Text>
-        <Text style={styles.permissionText}>{t.cameraPermissionText}</Text>
-        <Text style={styles.permissionNote}>
-          {isDenied ? t.permissionDeniedNote : t.cameraPermissionNote}
-        </Text>
+      </View>
+      <View style={styles.onboardingFooter}>
         {isDenied ? (
-          <TouchableOpacity
-            style={styles.permissionButton}
-            onPress={handleOpenSettings}
-            accessibilityRole="button"
-            accessibilityLabel={t.openSettings}
-          >
-            <Text style={styles.permissionButtonText}>{t.openSettings}</Text>
+          <TouchableOpacity style={styles.onboardingButton} onPress={handleOpenSettings}>
+            <Text style={styles.onboardingButtonText}>{t.openSettings}</Text>
           </TouchableOpacity>
         ) : (
-          <TouchableOpacity
-            style={styles.permissionButton}
-            onPress={onRequestPermission}
-            accessibilityRole="button"
-            accessibilityLabel={t.allowPermission}
-          >
-            <Text style={styles.permissionButtonText}>{t.allowPermission}</Text>
+          <TouchableOpacity style={styles.onboardingButton} onPress={onStart}>
+            <Text style={styles.onboardingButtonText}>{t.getStarted}</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -395,7 +113,7 @@ const PermissionScreen = React.memo(({ onRequestPermission, isDenied, t }) => {
   );
 });
 
-const StatCard = React.memo(({ icon, value, label, color }) => (
+const _StatCard = React.memo(({ icon, value, label, color }) => (
   <View
     style={[styles.statCard, { borderLeftColor: color || COLORS.primary }]}
     accessibilityLabel={`${label}: ${value}`}
@@ -407,7 +125,7 @@ const StatCard = React.memo(({ icon, value, label, color }) => (
   </View>
 ));
 
-const SettingItem = React.memo(({ label, description, value, onValueChange, isLast }) => (
+const _SettingItem = React.memo(({ label, description, value, onValueChange, isLast }) => (
   <View style={[styles.settingItem, isLast && styles.settingItemLast]}>
     <View style={styles.settingTextContainer}>
       <Text style={styles.settingLabel}>{label}</Text>
@@ -426,7 +144,7 @@ const SettingItem = React.memo(({ label, description, value, onValueChange, isLa
 ));
 
 // Pattern selector component
-const PatternSelector = React.memo(({ patterns, selected, onSelect, patternLabels }) => (
+const _PatternSelector = React.memo(({ patterns, selected, onSelect, patternLabels }) => (
   <View style={styles.patternContainer}>
     {Object.keys(patterns).map((key) => (
       <TouchableOpacity
@@ -443,7 +161,7 @@ const PatternSelector = React.memo(({ patterns, selected, onSelect, patternLabel
 ));
 
 // Intensity selector component (step buttons)
-const IntensitySelector = React.memo(({ value, onChange, min, max, step, t }) => {
+const _IntensitySelector = React.memo(({ value, onChange, min, max, step, t }) => {
   const levels = [];
   for (let i = min; i <= max; i += step) {
     levels.push(i);
@@ -469,7 +187,7 @@ const IntensitySelector = React.memo(({ value, onChange, min, max, step, t }) =>
   );
 });
 
-const SettingsModal = React.memo(({
+const _SettingsModal = React.memo(({
   visible, onClose, sensitivity, setSensitivity,
   vibrationEnabled, setVibrationEnabled, vibrationIntensity, setVibrationIntensity, vibrationPattern, setVibrationPattern,
   flashEnabled, setFlashEnabled, flashPattern, setFlashPattern,
@@ -586,7 +304,7 @@ const SettingsModal = React.memo(({
   </Modal>
 ));
 
-const StatsModal = React.memo(({ visible, onClose, stats, t }) => (
+const _StatsModal = React.memo(({ visible, onClose, stats, t }) => (
   <Modal visible={visible} animationType="slide" transparent={true} onRequestClose={onClose}>
     <View style={styles.modalOverlay}>
       <View style={styles.modalContent}>
@@ -612,7 +330,7 @@ const StatsModal = React.memo(({ visible, onClose, stats, t }) => (
   </Modal>
 ));
 
-const SessionResultModal = React.memo(({ visible, onClose, result, t }) => {
+const _SessionResultModal = React.memo(({ visible, onClose, result, t }) => {
   if (!visible || !result) return null;
   const isGoodSession = result.alerts < 5;
 
@@ -668,8 +386,12 @@ export default function App() {
   const [vibrationEnabled, setVibrationEnabled] = useState(true);
   const [vibrationIntensity, setVibrationIntensity] = useState(CONFIG.VIBRATION_INTENSITY.DEFAULT);
   const [vibrationPattern, setVibrationPattern] = useState('double');
-  const [flashEnabled, setFlashEnabled] = useState(true); // 기본 활성화
+  const [flashEnabled, setFlashEnabled] = useState(true); // 화면 플래시 기본 활성화
+  const [flashIntensity, setFlashIntensity] = useState(CONFIG.FLASH_INTENSITY?.DEFAULT || 800);
   const [flashPattern, setFlashPattern] = useState('double');
+  const [torchEnabled, setTorchEnabled] = useState(true); // 카메라 플래시(손전등) 기본 활성화
+  const [torchIntensity, setTorchIntensity] = useState(CONFIG.FLASH_INTENSITY?.DEFAULT || 800);
+  const [torchPattern, setTorchPattern] = useState('double');
   const [totalAlerts, setTotalAlerts] = useState(0);
   const [sessionTime, setSessionTime] = useState(0);
   const [totalSessionTime, setTotalSessionTime] = useState(0);
@@ -680,19 +402,30 @@ export default function App() {
   const [errorCount, setErrorCount] = useState(0);
 
   // Calculate good posture rate for current session (capped at 100%)
-  const goodPostureRate = sessionTime > 0 ? Math.min(100, Math.round((sessionGoodPostureTime / sessionTime) * 100)) : 100;
+  const goodPostureRate = sessionTime > 0 ? Math.min(100, Math.round((sessionGoodPostureTime / sessionTime) * 100)) : 0;
   const [showSettings, setShowSettings] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [showSessionResult, setShowSessionResult] = useState(false);
   const [sessionResult, setSessionResult] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [showFlashOverlay, setShowFlashOverlay] = useState(false);
-  const [pipSupported, setPipSupported] = useState(false);
+  // PIP 기능 비활성화
+  const pipSupported = false;
+  const isInPipMode = false;
+  const isInPipBySize = false;
+  const pipActive = false;
+  const isLandscape = width > height && !pipActive;
   const [showPremium, setShowPremium] = useState(false);
   const [hideAds, setHideAds] = useState(false);
-  // Native camera disabled due to ML Kit plugin compatibility issues
-  // const [useNativeCamera, setUseNativeCamera] = useState(false);
-  // const [nativeCameraReady, setNativeCameraReady] = useState(false);
+  const [screenOffMode, setScreenOffMode] = useState(false);
+  const [clockSettings, setClockSettings] = useState({
+    showTime: true, showDate: true, showDay: true, showStats: true,
+    fontSize: 'large', color: 'green',
+  });
+  const [panelCollapsed, setPanelCollapsed] = useState(false);
+  const [showToast, setShowToast] = useState(false);
+  const toastAnim = useRef(new Animated.Value(0)).current;
+  const toastTimeoutRef = useRef(null);
 
   const webViewRef = useRef(null);
   const monitoringInterval = useRef(null);
@@ -704,6 +437,7 @@ export default function App() {
   const pulseAnimationRef = useRef(null);
   const isMountedRef = useRef(true);
   const badPostureCountRef = useRef(0); // Ref for immediate alert triggering
+  const monitoringStartedAt = useRef(0); // Timestamp when monitoring started (grace period)
   const lastAlertTimeRef = useRef(0); // Throttle alerts to 1 per second
 
   // Refs for latest values to avoid stale closures in callbacks
@@ -736,19 +470,10 @@ export default function App() {
     initLanguage();
   }, []);
 
-  // Check PiP support on mount
-  useEffect(() => {
-    const checkPipSupport = async () => {
-      try {
-        const supported = await isPipSupported();
-        setPipSupported(supported);
-      } catch (error) {
-        console.error('PiP support check error:', error);
-        setPipSupported(false);
-      }
-    };
-    checkPipSupport();
-  }, []);
+  // PIP 기능 비활성화됨 - 아래 useEffect들 제거
+  // useEffect for PIP support check - DISABLED
+  // useEffect for PIP mode change listener - DISABLED
+  // useEffect for PIP state polling - DISABLED
 
   // Initialize premium and check ad-free status
   useEffect(() => {
@@ -768,15 +493,8 @@ export default function App() {
     };
   }, []);
 
-  // Handler for entering PiP mode
-  const handleEnterPipMode = useCallback(async () => {
-    if (!pipSupported) return;
-    try {
-      await enterPipMode(9, 16); // Portrait aspect ratio for posture view
-    } catch (error) {
-      console.error('Enter PiP error:', error);
-    }
-  }, [pipSupported]);
+  // PIP mode handler - DISABLED
+  const handleEnterPipMode = useCallback(() => {}, []);
 
   // Update home screen widget when monitoring state or posture changes
   const lastWidgetUpdateRef = useRef(0);
@@ -811,6 +529,8 @@ export default function App() {
     }
   }, [isMonitoring, totalSessionTime, goodPostureTime]);
 
+  // PIP overlay status update - DISABLED
+
   useEffect(() => {
     const checkOnboarding = async () => {
       try {
@@ -843,24 +563,12 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => {
-    const requestNotificationPermission = async () => {
-      try {
-        const { status } = await Notifications.requestPermissionsAsync();
-        if (status !== 'granted') {
-          // Permission not granted - alerts may not work
-        }
-      } catch (error) {
-        console.error('Notification permission error:', error);
-      }
-    };
-    requestNotificationPermission();
-  }, []);
+  // Notification permission is now requested during onboarding (handleStart)
 
   useEffect(() => {
     const loadSettings = async () => {
       try {
-        const keys = ['sensitivity', 'alertEnabled', 'vibrationEnabled', 'vibrationIntensity', 'vibrationPattern', 'flashEnabled', 'flashPattern', 'totalAlerts', 'totalSessionTime', 'sessionsCount', 'goodPostureTime'];
+        const keys = ['sensitivity', 'alertEnabled', 'vibrationEnabled', 'vibrationIntensity', 'vibrationPattern', 'flashEnabled', 'flashIntensity', 'flashPattern', 'torchEnabled', 'torchIntensity', 'torchPattern', 'screenOffMode', 'totalAlerts', 'totalSessionTime', 'sessionsCount', 'goodPostureTime', 'clock_showTime', 'clock_showDate', 'clock_showDay', 'clock_showStats', 'clock_fontSize', 'clock_color'];
         const results = await AsyncStorage.multiGet(keys);
         const settings = Object.fromEntries(results);
 
@@ -882,9 +590,31 @@ export default function App() {
           setVibrationPattern(settings.vibrationPattern);
         }
         if (settings.flashEnabled) setFlashEnabled(settings.flashEnabled === 'true');
+        if (settings.flashIntensity) {
+          const fIntensity = parseInt(settings.flashIntensity, 10);
+          const flashMin = CONFIG.FLASH_INTENSITY?.MIN || 100;
+          const flashMax = CONFIG.FLASH_INTENSITY?.MAX || 2000;
+          if (!isNaN(fIntensity) && fIntensity >= flashMin && fIntensity <= flashMax) {
+            setFlashIntensity(fIntensity);
+          }
+        }
         if (settings.flashPattern && CONFIG.FLASH_PATTERNS[settings.flashPattern]) {
           setFlashPattern(settings.flashPattern);
         }
+        // Torch (카메라 플래시) 설정 로드
+        if (settings.torchEnabled) setTorchEnabled(settings.torchEnabled === 'true');
+        if (settings.torchIntensity) {
+          const tIntensity = parseInt(settings.torchIntensity, 10);
+          const torchMin = CONFIG.FLASH_INTENSITY?.MIN || 100;
+          const torchMax = CONFIG.FLASH_INTENSITY?.MAX || 2000;
+          if (!isNaN(tIntensity) && tIntensity >= torchMin && tIntensity <= torchMax) {
+            setTorchIntensity(tIntensity);
+          }
+        }
+        if (settings.torchPattern && CONFIG.FLASH_PATTERNS[settings.torchPattern]) {
+          setTorchPattern(settings.torchPattern);
+        }
+        if (settings.screenOffMode) setScreenOffMode(settings.screenOffMode === 'true');
 
         // Validate numeric values with bounds checking
         const safeParseInt = (value, max = Number.MAX_SAFE_INTEGER) => {
@@ -897,6 +627,18 @@ export default function App() {
         if (settings.totalSessionTime) setTotalSessionTime(safeParseInt(settings.totalSessionTime, CONFIG.VALIDATION_LIMITS.SESSION_TIME));
         if (settings.sessionsCount) setSessionsCount(safeParseInt(settings.sessionsCount, CONFIG.VALIDATION_LIMITS.SESSIONS_COUNT));
         if (settings.goodPostureTime) setGoodPostureTime(safeParseInt(settings.goodPostureTime, CONFIG.VALIDATION_LIMITS.SESSION_TIME));
+
+        // Load clock settings
+        const loadedClock = {};
+        if (settings.clock_showTime !== undefined) loadedClock.showTime = settings.clock_showTime !== 'false';
+        if (settings.clock_showDate !== undefined) loadedClock.showDate = settings.clock_showDate !== 'false';
+        if (settings.clock_showDay !== undefined) loadedClock.showDay = settings.clock_showDay !== 'false';
+        if (settings.clock_showStats !== undefined) loadedClock.showStats = settings.clock_showStats !== 'false';
+        if (settings.clock_fontSize && ['small', 'medium', 'large'].includes(settings.clock_fontSize)) loadedClock.fontSize = settings.clock_fontSize;
+        if (settings.clock_color && ['green', 'white', 'blue', 'red'].includes(settings.clock_color)) loadedClock.color = settings.clock_color;
+        if (Object.keys(loadedClock).length > 0) {
+          setClockSettings(prev => ({ ...prev, ...loadedClock }));
+        }
       } catch (error) {
         console.error('Settings load error:', error);
       }
@@ -909,6 +651,15 @@ export default function App() {
       await AsyncStorage.setItem(key, String(value));
     } catch (error) {
       console.error('Settings save error:', error);
+    }
+  }, []);
+
+  const handleClockSettingChange = useCallback(async (key, value) => {
+    setClockSettings(prev => ({ ...prev, [key]: value }));
+    try {
+      await AsyncStorage.setItem(`clock_${key}`, String(value));
+    } catch (error) {
+      console.error('Clock setting save error:', error);
     }
   }, []);
 
@@ -935,16 +686,24 @@ export default function App() {
       if (appState.current === 'active' && nextAppState.match(/inactive|background/)) {
         if (isMonitoring) {
           saveSessionStats();
+          // Start background posture reminders
+          scheduleBackgroundReminder(sensitivity);
+        }
+      } else if (appState.current.match(/inactive|background/) && nextAppState === 'active') {
+        if (isMonitoring) {
+          // Stop background reminders - real detection resumes
+          cancelBackgroundReminder();
         }
       }
       appState.current = nextAppState;
     });
     return () => subscription.remove();
-  }, [isMonitoring, saveSessionStats]);
+  }, [isMonitoring, saveSessionStats, sensitivity, scheduleBackgroundReminder, cancelBackgroundReminder]);
 
-  // Execute torch flash pattern (카메라 플래시 사용, 실패시 화면 플래시로 fallback)
-  const executeTorchPattern = useCallback(async (pattern) => {
-    const timings = CONFIG.FLASH_PATTERNS[pattern] || CONFIG.FLASH_PATTERNS.double;
+  // Execute screen flash pattern (화면 플래시만)
+  const executeScreenFlash = useCallback(async (pattern, intensity) => {
+    const patternFn = CONFIG.FLASH_PATTERNS[pattern] || CONFIG.FLASH_PATTERNS.double;
+    const timings = typeof patternFn === 'function' ? patternFn(intensity) : patternFn;
 
     try {
       for (let i = 0; i < timings.length; i += 2) {
@@ -952,16 +711,41 @@ export default function App() {
         const offTime = timings[i + 1] || 0;
 
         if (onTime > 0) {
-          // 카메라 토치 시도
+          setShowFlashOverlay(true);
+          await new Promise(resolve => setTimeout(resolve, onTime));
+          setShowFlashOverlay(false);
+        }
+        if (offTime > 0) {
+          await new Promise(resolve => setTimeout(resolve, offTime));
+        }
+      }
+    } catch (error) {
+      console.error('Screen flash error:', error);
+    } finally {
+      setShowFlashOverlay(false);
+    }
+  }, []);
+
+  // Execute torch flash pattern (카메라 플래시/손전등만)
+  const executeTorchFlash = useCallback(async (pattern, intensity) => {
+    const patternFn = CONFIG.FLASH_PATTERNS[pattern] || CONFIG.FLASH_PATTERNS.double;
+    const timings = typeof patternFn === 'function' ? patternFn(intensity) : patternFn;
+
+    try {
+      for (let i = 0; i < timings.length; i += 2) {
+        const onTime = timings[i];
+        const offTime = timings[i + 1] || 0;
+
+        if (onTime > 0) {
           try {
             await Torch.switchState(true);
             await new Promise(resolve => setTimeout(resolve, onTime));
             await Torch.switchState(false);
           } catch (torchError) {
-            // 토치 실패시 화면 플래시로 fallback
-            setShowFlashOverlay(true);
-            await new Promise(resolve => setTimeout(resolve, onTime));
-            setShowFlashOverlay(false);
+            // Show error only once per pattern
+            if (i === 0) {
+              Alert.alert('Torch Error', String(torchError));
+            }
           }
         }
         if (offTime > 0) {
@@ -969,7 +753,7 @@ export default function App() {
         }
       }
     } catch (error) {
-      console.error('Flash error:', error);
+      Alert.alert('Torch Pattern Error', String(error));
     } finally {
       // 토치 끄기 보장
       try {
@@ -977,8 +761,41 @@ export default function App() {
       } catch {
         // 무시
       }
-      setShowFlashOverlay(false);
     }
+  }, []);
+
+  // Legacy function for backward compatibility (preview용)
+  const executeTorchPattern = useCallback(async (pattern, intensity) => {
+    await executeScreenFlash(pattern, intensity);
+  }, [executeScreenFlash]);
+
+  // Background posture reminder scheduling
+  const scheduleBackgroundReminder = useCallback(async (sens) => {
+    try {
+      await Notifications.cancelScheduledNotificationAsync('background-posture-reminder');
+    } catch {}
+    // Map sensitivity to reminder interval (seconds)
+    const intervalMap = { 0.1: 300, 0.2: 240, 0.3: 180, 0.4: 120, 0.5: 60 };
+    const interval = intervalMap[sens] || 180;
+    try {
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: '자세 확인 시간!',
+          body: '잠시 멈추고 자세를 확인해보세요.',
+          sound: true,
+        },
+        trigger: { seconds: interval, repeats: true },
+        identifier: 'background-posture-reminder',
+      });
+    } catch (error) {
+      console.error('Background reminder schedule error:', error);
+    }
+  }, []);
+
+  const cancelBackgroundReminder = useCallback(async () => {
+    try {
+      await Notifications.cancelScheduledNotificationAsync('background-posture-reminder');
+    } catch {}
   }, []);
 
   const triggerBadPostureAlert = useCallback(async () => {
@@ -1018,43 +835,61 @@ export default function App() {
       }
     }
 
-    // Camera torch flash alert with pattern (카메라 플래시)
+    // Screen flash alert with pattern (화면 플래시)
     if (flashEnabled) {
       try {
-        await executeTorchPattern(flashPattern);
+        executeScreenFlash(flashPattern, flashIntensity);
       } catch (error) {
-        console.error('Flash error:', error);
+        console.error('Screen flash error:', error);
       }
     }
 
-    // Push notification
-    if (alertEnabled) {
+    // Camera torch flash alert with pattern (카메라 플래시/손전등)
+    if (torchEnabled) {
       try {
-        await Notifications.scheduleNotificationAsync({
-          content: {
-            title: t.alertTitle,
-            body: t.alertBody,
-            sound: true,
-          },
-          trigger: null,
-        });
+        executeTorchFlash(torchPattern, torchIntensity);
       } catch (error) {
-        console.error('Notification error:', error);
+        console.error('Torch flash error:', error);
       }
     }
-  }, [alertEnabled, vibrationEnabled, vibrationIntensity, vibrationPattern, flashEnabled, flashPattern, totalAlerts, saveSettings, executeTorchPattern, t]);
 
-  // Native camera posture change handler - disabled due to ML Kit plugin compatibility issues
-  // const handleNativePostureChange = useCallback((postureData) => { ... }, []);
+  }, [vibrationEnabled, vibrationIntensity, vibrationPattern, flashEnabled, flashIntensity, flashPattern, torchEnabled, torchIntensity, torchPattern, totalAlerts, saveSettings, executeScreenFlash, executeTorchFlash]);
+
 
   // Handle messages from WebView (pose detection results)
+  // Validate WebView message structure
+  const isValidWebViewMessage = useCallback((data) => {
+    if (!data || typeof data !== 'object') return false;
+    if (typeof data.type !== 'string') return false;
+    // Only allow known message types
+    const validTypes = ['ready', 'posture', 'calibrated', 'error', 'log', 'orientation', 'started', 'stopped', 'privacyModeChanged'];
+    return validTypes.includes(data.type);
+  }, []);
+
   const handleWebViewMessage = useCallback((event) => {
     try {
+      // Validate event structure
+      if (!event?.nativeEvent?.data) {
+        console.warn('Invalid WebView event structure');
+        return;
+      }
+
       const data = JSON.parse(event.nativeEvent.data);
+
+      // Validate message structure
+      if (!isValidWebViewMessage(data)) {
+        console.warn('Invalid WebView message:', data?.type);
+        return;
+      }
 
       if (data.type === 'ready') {
         setWebViewReady(true);
       } else if (data.type === 'posture') {
+        // Validate posture data fields
+        if (typeof data.status !== 'string' || !['good', 'warning', 'bad'].includes(data.status)) {
+          console.warn('Invalid posture status:', data.status);
+          return;
+        }
         // Convert status string to POSTURE_STATUS
         let status = POSTURE_STATUS.GOOD;
         if (data.status === 'bad') status = POSTURE_STATUS.BAD;
@@ -1069,7 +904,10 @@ export default function App() {
           setSessionGoodPostureTime(prev => prev + 1);
         }
 
-        if (status === POSTURE_STATUS.BAD) {
+        // Skip posture alerts during 3-second grace period after START
+        const gracePeriodActive = (Date.now() - monitoringStartedAt.current) < 3000;
+
+        if (status === POSTURE_STATUS.BAD && !gracePeriodActive) {
           // Use ref for immediate control, state for UI
           badPostureCountRef.current += 1;
           if (badPostureCountRef.current > CONFIG.BAD_POSTURE_THRESHOLD) {
@@ -1091,7 +929,7 @@ export default function App() {
     } catch (e) {
       console.error('WebView message parse error:', e);
     }
-  }, [triggerBadPostureAlert]);
+  }, [triggerBadPostureAlert, isValidWebViewMessage]);
 
   // Send message to WebView
   const sendToWebView = useCallback((message) => {
@@ -1100,33 +938,7 @@ export default function App() {
     }
   }, []);
 
-  useEffect(() => {
-    if (isMonitoring) {
-      // Store animation reference for proper cleanup
-      pulseAnimationRef.current = Animated.loop(
-        Animated.sequence([
-          Animated.timing(pulseAnim, { toValue: 1.05, duration: 1000, useNativeDriver: true }),
-          Animated.timing(pulseAnim, { toValue: 1, duration: 1000, useNativeDriver: true }),
-        ])
-      );
-      pulseAnimationRef.current.start();
-    } else {
-      // Stop animation and reset value
-      if (pulseAnimationRef.current) {
-        pulseAnimationRef.current.stop();
-        pulseAnimationRef.current = null;
-      }
-      pulseAnim.setValue(1);
-    }
-
-    // Cleanup on unmount
-    return () => {
-      if (pulseAnimationRef.current) {
-        pulseAnimationRef.current.stop();
-        pulseAnimationRef.current = null;
-      }
-    };
-  }, [isMonitoring, pulseAnim]);
+  // pulseAnim removed - was causing camera zoom in/out loop
 
   // Send start/stop monitoring to WebView when monitoring state changes
   useEffect(() => {
@@ -1188,12 +1000,10 @@ export default function App() {
           // Ignore keep-awake error
         }
 
-        // Dismiss monitoring notification
-        try {
-          await Notifications.dismissNotificationAsync('monitoring-notification');
-        } catch {
-          // Ignore notification dismiss error
-        }
+        // PiP stays enabled always
+
+        // Cancel background reminders
+        await cancelBackgroundReminder();
 
         // Capture session data before resetting
         const sessionDuration = formatTime(sessionTimeRef.current);
@@ -1205,12 +1015,14 @@ export default function App() {
         setSessionsCount(newSessionsCount);
         await saveSettings('sessionsCount', newSessionsCount);
 
-        // Show session result using Alert
-        Alert.alert(
-          'Session Complete',
-          `Duration: ${sessionDuration}\nAlerts: ${sessionAlerts}`,
-          [{ text: 'OK', style: 'default' }]
-        );
+        // Save result for modal and show toast
+        setSessionResult({ duration: sessionDuration, alerts: sessionAlerts });
+        setShowToast(true);
+        Animated.timing(toastAnim, { toValue: 1, duration: 300, useNativeDriver: true }).start();
+        if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+        toastTimeoutRef.current = setTimeout(() => {
+          Animated.timing(toastAnim, { toValue: 0, duration: 300, useNativeDriver: true }).start(() => setShowToast(false));
+        }, 5000);
       } else {
         // Close result modal if open
         setShowSessionResult(false);
@@ -1220,8 +1032,11 @@ export default function App() {
         setErrorCount(0); // Reset error count for new session
         setBadPostureCount(0);
         badPostureCountRef.current = 0; // Reset ref too
+        monitoringStartedAt.current = Date.now(); // 3-second grace period
         setIsMonitoring(true);
         setPostureStatus(POSTURE_STATUS.GOOD);
+
+        // PiP is always enabled at app startup
 
         // Enable keep-awake to prevent screen from turning off during monitoring
         try {
@@ -1230,21 +1045,6 @@ export default function App() {
           // Ignore keep-awake error
         }
 
-        // Show persistent notification for monitoring
-        try {
-          await Notifications.scheduleNotificationAsync({
-            content: {
-              title: lang === 'ko' ? '자세 모니터링 중' : 'Posture Monitoring Active',
-              body: lang === 'ko' ? '좋은 자세를 유지하세요. 탭하여 앱으로 돌아가기' : 'Maintain good posture. Tap to return to app',
-              sticky: true,
-              autoDismiss: false,
-            },
-            trigger: null,
-            identifier: 'monitoring-notification',
-          });
-        } catch {
-          // Ignore notification error
-        }
       }
     } finally {
       // Delay to prevent rapid clicking
@@ -1306,55 +1106,26 @@ export default function App() {
     );
   }
 
-  if (showOnboarding) {
-    return <OnboardingScreen onComplete={completeOnboarding} t={t} />;
-  }
-
-  if (!permission) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <StatusBar style="light" />
-        <View style={styles.centerContent}>
-          <ActivityIndicator size="large" color={COLORS.primary} />
-          <Text style={styles.loadingText}>{t.checkingPermission}</Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
-  if (!permission.granted) {
-    // Check if permission was explicitly denied (canAskAgain will be false)
-    const isDenied = permission.status === 'denied' && !permission.canAskAgain;
-    return <PermissionScreen onRequestPermission={requestPermission} isDenied={isDenied} t={t} />;
+  // Combined: show welcome screen if onboarding needed OR permission not granted
+  if (showOnboarding || !permission || !permission.granted) {
+    const isDenied = permission && permission.status === 'denied' && !permission.canAskAgain;
+    const handleStart = async () => {
+      // Request all permissions at once, then complete onboarding
+      if (!permission || !permission.granted) {
+        await requestPermission();
+      }
+      try { await Notifications.requestPermissionsAsync(); } catch (e) { /* ignore */ }
+      await completeOnboarding();
+    };
+    return <_WelcomeScreen onStart={handleStart} needsPermission={!permission || !permission.granted} isDenied={isDenied} t={t} />;
   }
 
   return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar style="light" />
+    <SafeAreaView style={[styles.container, pipActive && { padding: 0, margin: 0 }]}>
+      <StatusBar style="light" hidden={pipActive} />
 
-      {/* Header - Design: Left stats, Center title, Right settings */}
-      <View style={styles.header}>
-        <TouchableOpacity
-          style={styles.headerButton}
-          onPress={() => setShowStats(true)}
-          accessibilityRole="button"
-          accessibilityLabel={t.statistics}
-        >
-          <Text style={styles.headerButtonIcon}>📊</Text>
-        </TouchableOpacity>
-        <Text style={styles.headerTitle} accessibilityRole="header">POSTURE GUARD</Text>
-        <TouchableOpacity
-          style={styles.headerButton}
-          onPress={() => setShowSettings(true)}
-          accessibilityRole="button"
-          accessibilityLabel={t.settings}
-        >
-          <Text style={styles.headerButtonIcon}>⚙️</Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* Stats Bar - warnings, errors, time, score */}
-      <View style={styles.statsBar}>
+      {/* Stats Bar - always visible */}
+      <View style={[styles.statsBar, isLandscape && styles.statsBarLandscape]} accessibilityRole="summary">
         <View style={styles.statsBarItem}>
           <Text style={styles.statsBarIcon}>⚠️</Text>
           <Text style={styles.statsBarValue}>{warningCount || 0}</Text>
@@ -1373,10 +1144,20 @@ export default function App() {
           <Text style={styles.statsBarIcon}>🏆</Text>
           <Text style={styles.statsBarValue}>{goodPostureRate}%</Text>
         </View>
+        <View style={styles.statsBarDivider} />
+        <View style={styles.statsBarItem}>
+          <Text style={styles.statsBarIcon}>{isMonitoring ? getStatusEmoji() : ''}</Text>
+          <Text style={[styles.statsBarValue, isMonitoring && { color: getStatusColor() }]}>
+            {isMonitoring ? getStatusText() : 'Ready'}
+          </Text>
+        </View>
       </View>
 
+      {/* Main Content Wrapper - row in landscape, column in portrait */}
+      <View style={[{ flex: 1 }, isLandscape && styles.landscapeWrapper]}>
+
       {/* Camera View with AI Pose Detection */}
-      <Animated.View style={[styles.cameraContainer, { flex: 1, transform: [{ scale: pulseAnim }] }]}>
+      <View style={[styles.cameraContainer, isLandscape ? { flex: 0.6 } : { flex: 1 }]}>
         {/* WebView-based pose detection */}
         <WebView
             ref={webViewRef}
@@ -1412,36 +1193,256 @@ export default function App() {
               console.warn('WebView HTTP error:', nativeEvent.statusCode);
             }}
           />
-        {/* Overlay for session info - shown on top of camera */}
-        {isMonitoring && (
-          <View style={styles.webViewOverlay}>
-            <View style={styles.sessionInfo}>
-              <Text style={styles.sessionTimeLabel}>{t.sessionTime}</Text>
-              <Text style={styles.sessionTime}>{formatTime(sessionTime)}</Text>
-            </View>
-            {currentPostureIssues.length > 0 && (
-              <View style={styles.issuesContainer}>
-                <Text style={styles.issuesText}>{currentPostureIssues.join(', ')}</Text>
-              </View>
-            )}
-          </View>
-        )}
         {!webViewReady && (
           <View style={styles.loadingOverlay}>
             <ActivityIndicator size="large" color="#19e66b" />
             <Text style={styles.loadingText}>{t.loading}</Text>
           </View>
         )}
-      </Animated.View>
+      </View>
 
-      {/* Bottom Control Panel - Sliders and Stop Button */}
-      <View style={styles.bottomPanel}>
-        {/* Vibration Intensity Slider */}
-        <View style={styles.sliderGroup}>
-          <View style={styles.sliderLabelRow}>
-            <Text style={styles.sliderLabel}>📳 진동 세기</Text>
-            <Text style={styles.sliderValue}>{(vibrationIntensity / 1000).toFixed(1)}초</Text>
+      {/* Control Panel - Side panel (ScrollView) in landscape, Bottom panel in portrait */}
+      {isLandscape ? (
+        <ScrollView nativeID="pip-hide" testID="pip-hide" style={styles.sidePanel} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 20 }}>
+        {/* Toggle Buttons Row */}
+        <View style={styles.toggleRow}>
+          <TouchableOpacity
+            style={[styles.toggleButton, vibrationEnabled && styles.toggleButtonActive]}
+            onPress={() => { setVibrationEnabled(!vibrationEnabled); saveSettings('vibrationEnabled', !vibrationEnabled); }}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.toggleIcon}>📳</Text>
+            <Text style={[styles.toggleLabel, vibrationEnabled && styles.toggleLabelActive]}>{lang === 'ko' ? '진동' : 'Vib'}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.toggleButton, flashEnabled && styles.toggleButtonActive]}
+            onPress={() => { setFlashEnabled(!flashEnabled); saveSettings('flashEnabled', !flashEnabled); }}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.toggleIcon}>💡</Text>
+            <Text style={[styles.toggleLabel, flashEnabled && styles.toggleLabelActive]}>{lang === 'ko' ? '화면' : 'Screen'}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.toggleButton, torchEnabled && styles.toggleButtonActive, { borderColor: torchEnabled ? '#FF6B35' : 'rgba(255,255,255,0.1)' }]}
+            onPress={() => { setTorchEnabled(!torchEnabled); saveSettings('torchEnabled', !torchEnabled); }}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.toggleIcon}>🔦</Text>
+            <Text style={[styles.toggleLabel, torchEnabled && styles.toggleLabelActive]}>{lang === 'ko' ? '손전등' : 'Torch'}</Text>
+          </TouchableOpacity>
+        </View>
+        <View style={[styles.toggleRow, { marginTop: 4 }]}>
+          <TouchableOpacity
+            style={[styles.toggleButton, screenOffMode && styles.screenOffButtonActive]}
+            onPress={() => { setScreenOffMode(!screenOffMode); saveSettings('screenOffMode', !screenOffMode); }}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.toggleIcon}>🕐</Text>
+            <Text style={[styles.toggleLabel, screenOffMode && styles.toggleLabelActive]}>{t.deskClock}</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Vibration Cycle Slider */}
+        <View style={[styles.sliderGroup, !vibrationEnabled && styles.sliderGroupDisabled]}>
+          <Text style={[styles.sliderLabel, !vibrationEnabled && styles.sliderLabelDisabled]}>📳 {lang === 'ko' ? '진동 주기' : 'Vibration'}</Text>
+          <Slider style={styles.slider} minimumValue={CONFIG.VIBRATION_INTENSITY.MIN} maximumValue={CONFIG.VIBRATION_INTENSITY.MAX} step={CONFIG.VIBRATION_INTENSITY.STEP} value={vibrationIntensity} onValueChange={(value) => setVibrationIntensity(value)} onSlidingComplete={(value) => saveSettings('vibrationIntensity', value)} minimumTrackTintColor={vibrationEnabled ? COLORS.primary : 'rgba(255,255,255,0.1)'} maximumTrackTintColor="rgba(255,255,255,0.2)" thumbTintColor={vibrationEnabled ? COLORS.primary : 'rgba(255,255,255,0.3)'} disabled={!vibrationEnabled} />
+          <Text style={[styles.sliderValue, !vibrationEnabled && styles.sliderValueDisabled]}>{(vibrationIntensity / 1000).toFixed(1)}s</Text>
+        </View>
+
+        {/* Vibration Pattern Selector */}
+        {vibrationEnabled && (
+          <View style={styles.patternQuickSelect}>
+            <Text style={styles.patternQuickLabel}>🎵 {lang === 'ko' ? '패턴' : 'Pattern'}</Text>
+            <View style={styles.patternGrid}>
+              {[
+                { key: 'single', label: lang === 'ko' ? '1회' : '1x' },
+                { key: 'double', label: lang === 'ko' ? '2회' : '2x' },
+                { key: 'triple', label: lang === 'ko' ? '3회' : '3x' },
+                { key: 'heartbeat', label: lang === 'ko' ? '심장' : 'Heart' },
+                { key: 'continuous', label: lang === 'ko' ? '연속' : 'Cont' },
+                { key: 'escalate', label: lang === 'ko' ? '점강' : 'Esc' },
+                { key: 'sos', label: 'SOS' },
+                { key: 'pulse', label: lang === 'ko' ? '펄스' : 'Pulse' },
+              ].map((item) => (
+                <TouchableOpacity key={item.key} style={[styles.patternPill, vibrationPattern === item.key && styles.patternPillActive]} onPress={() => { setVibrationPattern(item.key); saveSettings('vibrationPattern', item.key); try { Vibration.vibrate(CONFIG.VIBRATION_PATTERNS[item.key](vibrationIntensity)); } catch (e) {} }} activeOpacity={0.7}>
+                  <Text style={[styles.patternPillText, vibrationPattern === item.key && styles.patternPillTextActive]}>{item.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
           </View>
+        )}
+
+        {/* Flash Cycle Slider - landscape */}
+        {flashEnabled && (
+          <View style={styles.sliderGroup}>
+            <Text style={styles.sliderLabel}>💡 {lang === 'ko' ? '플래시 주기' : 'Flash'}</Text>
+            <Slider style={styles.slider} minimumValue={CONFIG.FLASH_INTENSITY?.MIN || 100} maximumValue={CONFIG.FLASH_INTENSITY?.MAX || 2000} step={CONFIG.FLASH_INTENSITY?.STEP || 100} value={flashIntensity} onValueChange={(value) => setFlashIntensity(value)} onSlidingComplete={(value) => saveSettings('flashIntensity', value)} minimumTrackTintColor={COLORS.warning} maximumTrackTintColor="rgba(255,255,255,0.2)" thumbTintColor={COLORS.warning} />
+            <Text style={[styles.sliderValue, { color: COLORS.warning }]}>{(flashIntensity / 1000).toFixed(1)}s</Text>
+          </View>
+        )}
+
+        {/* Flash Pattern Selector - landscape */}
+        {flashEnabled && (
+          <View style={styles.patternQuickSelect}>
+            <Text style={styles.patternQuickLabel}>💡 {lang === 'ko' ? '플래시' : 'Flash'}</Text>
+            <View style={styles.patternGrid}>
+              {[
+                { key: 'single', label: lang === 'ko' ? '1회' : '1x' },
+                { key: 'double', label: lang === 'ko' ? '2회' : '2x' },
+                { key: 'triple', label: lang === 'ko' ? '3회' : '3x' },
+                { key: 'heartbeat', label: lang === 'ko' ? '심장' : 'Heart' },
+                { key: 'continuous', label: lang === 'ko' ? '연속' : 'Cont' },
+                { key: 'escalate', label: lang === 'ko' ? '점강' : 'Esc' },
+                { key: 'sos', label: 'SOS' },
+                { key: 'pulse', label: lang === 'ko' ? '펄스' : 'Pulse' },
+              ].map((item) => (
+                <TouchableOpacity key={item.key} style={[styles.patternPill, flashPattern === item.key && styles.patternPillActive, { borderColor: flashPattern === item.key ? COLORS.warning : 'rgba(255,255,255,0.1)' }]} onPress={() => { setFlashPattern(item.key); saveSettings('flashPattern', item.key); executeScreenFlash(item.key, flashIntensity); }} activeOpacity={0.7}>
+                  <Text style={[styles.patternPillText, flashPattern === item.key && styles.patternPillTextActive]}>{item.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        )}
+
+        {/* Torch Cycle Slider - landscape */}
+        {torchEnabled && (
+          <View style={styles.sliderGroup}>
+            <Text style={styles.sliderLabel}>🔦 {lang === 'ko' ? '손전등' : 'Torch'}</Text>
+            <Slider style={styles.slider} minimumValue={CONFIG.FLASH_INTENSITY?.MIN || 100} maximumValue={CONFIG.FLASH_INTENSITY?.MAX || 2000} step={CONFIG.FLASH_INTENSITY?.STEP || 100} value={torchIntensity} onValueChange={(value) => setTorchIntensity(value)} onSlidingComplete={(value) => saveSettings('torchIntensity', value)} minimumTrackTintColor="#FF6B35" maximumTrackTintColor="rgba(255,255,255,0.2)" thumbTintColor="#FF6B35" />
+            <Text style={[styles.sliderValue, { color: '#FF6B35' }]}>{(torchIntensity / 1000).toFixed(1)}s</Text>
+          </View>
+        )}
+
+        {/* Torch Pattern Selector - landscape */}
+        {torchEnabled && (
+          <View style={styles.patternQuickSelect}>
+            <Text style={styles.patternQuickLabel}>🔦 {lang === 'ko' ? '손전등' : 'Torch'}</Text>
+            <View style={styles.patternGrid}>
+              {[
+                { key: 'single', label: lang === 'ko' ? '1회' : '1x' },
+                { key: 'double', label: lang === 'ko' ? '2회' : '2x' },
+                { key: 'triple', label: lang === 'ko' ? '3회' : '3x' },
+                { key: 'heartbeat', label: lang === 'ko' ? '심장' : 'Heart' },
+                { key: 'continuous', label: lang === 'ko' ? '연속' : 'Cont' },
+                { key: 'escalate', label: lang === 'ko' ? '점강' : 'Esc' },
+                { key: 'sos', label: 'SOS' },
+                { key: 'pulse', label: lang === 'ko' ? '펄스' : 'Pulse' },
+              ].map((item) => (
+                <TouchableOpacity key={item.key} style={[styles.patternPill, torchPattern === item.key && styles.patternPillActive, { borderColor: torchPattern === item.key ? '#FF6B35' : 'rgba(255,255,255,0.1)' }]} onPress={() => { setTorchPattern(item.key); saveSettings('torchPattern', item.key); executeTorchFlash(item.key, torchIntensity); }} activeOpacity={0.7}>
+                  <Text style={[styles.patternPillText, torchPattern === item.key && styles.patternPillTextActive]}>{item.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        )}
+
+        {/* Sensitivity Slider */}
+        <View style={styles.sliderGroup}>
+          <Text style={styles.sliderLabel}>🎚️ {lang === 'ko' ? '민감도' : 'Sensitivity'}</Text>
+          <Slider style={styles.slider} minimumValue={0.1} maximumValue={0.5} step={0.1} value={sensitivity} onValueChange={(value) => setSensitivity(Math.round(value * 10) / 10)} onSlidingComplete={(value) => saveSettings('sensitivity', Math.round(value * 10) / 10)} minimumTrackTintColor={COLORS.primary} maximumTrackTintColor="rgba(255,255,255,0.2)" thumbTintColor={COLORS.primary} />
+          <Text style={styles.sliderValue}>{Math.round(sensitivity * 100)}%</Text>
+        </View>
+
+        {/* Start/Stop Button */}
+        <TouchableOpacity style={[styles.stopButton, !isMonitoring && styles.startButton, isProcessing && { opacity: 0.6 }]} onPress={toggleMonitoring} activeOpacity={0.8} disabled={isProcessing}>
+          <Text style={styles.stopButtonIcon}>{isMonitoring ? '⏹' : '▶'}</Text>
+          <Text style={styles.stopButtonText}>{isMonitoring ? 'STOP' : 'START'}</Text>
+        </TouchableOpacity>
+        </ScrollView>
+      ) : (
+        <View nativeID="pip-hide" testID="pip-hide" style={[styles.bottomPanel, panelCollapsed && styles.bottomPanelCollapsed]}>
+        {/* Panel Collapse Handle */}
+        <TouchableOpacity
+          style={styles.panelHandle}
+          onPress={() => setPanelCollapsed(!panelCollapsed)}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel={panelCollapsed ? '패널 펼치기' : '패널 접기'}
+        >
+          <View style={styles.panelHandleBar} />
+          <Text style={styles.panelHandleArrow}>{panelCollapsed ? '▲' : '▼'}</Text>
+        </TouchableOpacity>
+
+        {!panelCollapsed && (<>
+        {/* Toggle Buttons Row - Vibration, Flash, Clock */}
+        <View style={styles.toggleRow}>
+          <TouchableOpacity
+            style={[styles.toggleButton, vibrationEnabled && styles.toggleButtonActive]}
+            onPress={() => {
+              const enabled = !vibrationEnabled;
+              setVibrationEnabled(enabled);
+              saveSettings('vibrationEnabled', enabled);
+            }}
+            activeOpacity={0.7}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: vibrationEnabled }}
+          >
+            <Text style={styles.toggleIcon}>📳</Text>
+            <Text style={[styles.toggleLabel, vibrationEnabled && styles.toggleLabelActive]}>{lang === 'ko' ? '진동' : 'Vibration'}</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.toggleButton, flashEnabled && styles.toggleButtonActive]}
+            onPress={() => {
+              const enabled = !flashEnabled;
+              setFlashEnabled(enabled);
+              saveSettings('flashEnabled', enabled);
+            }}
+            activeOpacity={0.7}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: flashEnabled }}
+          >
+            <Text style={styles.toggleIcon}>💡</Text>
+            <Text style={[styles.toggleLabel, flashEnabled && styles.toggleLabelActive]}>{lang === 'ko' ? '화면' : 'Screen'}</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.toggleButton, torchEnabled && styles.toggleButtonActive, { borderColor: torchEnabled ? '#FF6B35' : 'rgba(255,255,255,0.1)' }]}
+            onPress={async () => {
+              const enabled = !torchEnabled;
+              setTorchEnabled(enabled);
+              saveSettings('torchEnabled', enabled);
+              // Test torch when enabling
+              if (enabled) {
+                try {
+                  await Torch.switchState(true);
+                  await new Promise(r => setTimeout(r, 500));
+                  await Torch.switchState(false);
+                } catch (e) {
+                  Alert.alert('Torch Test Failed', String(e));
+                }
+              }
+            }}
+            activeOpacity={0.7}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: torchEnabled }}
+          >
+            <Text style={styles.toggleIcon}>🔦</Text>
+            <Text style={[styles.toggleLabel, torchEnabled && styles.toggleLabelActive]}>{lang === 'ko' ? '손전등' : 'Torch'}</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Second Row - Clock */}
+        <View style={[styles.toggleRow, { marginTop: 8 }]}>
+          <TouchableOpacity
+            style={[styles.toggleButton, screenOffMode && styles.screenOffButtonActive]}
+            onPress={() => {
+              const enabled = !screenOffMode;
+              setScreenOffMode(enabled);
+              saveSettings('screenOffMode', enabled);
+            }}
+            activeOpacity={0.7}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: screenOffMode }}
+          >
+            <Text style={styles.toggleIcon}>🕐</Text>
+            <Text style={[styles.toggleLabel, screenOffMode && styles.toggleLabelActive]}>{t.deskClock}</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Vibration Cycle Slider */}
+        <View style={[styles.sliderGroup, !vibrationEnabled && styles.sliderGroupDisabled]}>
+          <Text style={[styles.sliderLabel, !vibrationEnabled && styles.sliderLabelDisabled]}>📳 {lang === 'ko' ? '진동 주기' : 'Vibration'}</Text>
           <Slider
             style={styles.slider}
             minimumValue={CONFIG.VIBRATION_INTENSITY.MIN}
@@ -1450,41 +1451,196 @@ export default function App() {
             value={vibrationIntensity}
             onValueChange={(value) => setVibrationIntensity(value)}
             onSlidingComplete={(value) => saveSettings('vibrationIntensity', value)}
-            minimumTrackTintColor={COLORS.primary}
+            minimumTrackTintColor={vibrationEnabled ? COLORS.primary : 'rgba(255,255,255,0.1)'}
             maximumTrackTintColor="rgba(255,255,255,0.2)"
-            thumbTintColor={COLORS.primary}
+            thumbTintColor={vibrationEnabled ? COLORS.primary : 'rgba(255,255,255,0.3)'}
+            disabled={!vibrationEnabled}
+            accessibilityRole="adjustable"
           />
+          <Text style={[styles.sliderValue, !vibrationEnabled && styles.sliderValueDisabled]}>{(vibrationIntensity / 1000).toFixed(1)}s</Text>
         </View>
 
-        {/* Screen Brightness (Flash) Toggle */}
-        <View style={styles.sliderGroup}>
-          <View style={styles.sliderLabelRow}>
-            <Text style={styles.sliderLabel}>💡 화면 경고</Text>
-            <Text style={styles.sliderValue}>{flashEnabled ? 'ON' : 'OFF'}</Text>
+        {/* Vibration Pattern Selector - only show when vibration is enabled */}
+        {vibrationEnabled && (
+          <View style={styles.patternQuickSelect}>
+            <Text style={styles.patternQuickLabel}>🎵 {lang === 'ko' ? '진동 패턴' : 'Pattern'}</Text>
+            <View style={styles.patternGrid}>
+              {[
+                { key: 'single', label: lang === 'ko' ? '1회' : '1x' },
+                { key: 'double', label: lang === 'ko' ? '2회' : '2x' },
+                { key: 'triple', label: lang === 'ko' ? '3회' : '3x' },
+                { key: 'heartbeat', label: lang === 'ko' ? '심장박동' : 'Heartbeat' },
+                { key: 'continuous', label: lang === 'ko' ? '연속' : 'Continuous' },
+                { key: 'escalate', label: lang === 'ko' ? '점점강하게' : 'Escalate' },
+                { key: 'sos', label: 'SOS' },
+                { key: 'pulse', label: lang === 'ko' ? '펄스' : 'Pulse' },
+              ].map((item) => (
+                <TouchableOpacity
+                  key={item.key}
+                  style={[
+                    styles.patternPill,
+                    vibrationPattern === item.key && styles.patternPillActive,
+                  ]}
+                  onPress={() => {
+                    setVibrationPattern(item.key);
+                    saveSettings('vibrationPattern', item.key);
+                    try {
+                      const patternFn = CONFIG.VIBRATION_PATTERNS[item.key];
+                      Vibration.vibrate(patternFn(vibrationIntensity));
+                    } catch (e) { /* ignore */ }
+                  }}
+                  activeOpacity={0.7}
+                  accessibilityRole="button"
+                  accessibilityLabel={item.label}
+                  accessibilityState={{ selected: vibrationPattern === item.key }}
+                >
+                  <Text style={[
+                    styles.patternPillText,
+                    vibrationPattern === item.key && styles.patternPillTextActive,
+                  ]}>
+                    {item.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
           </View>
-          <Slider
-            style={styles.slider}
-            minimumValue={0}
-            maximumValue={1}
-            step={1}
-            value={flashEnabled ? 1 : 0}
-            onValueChange={(value) => {
-              const enabled = value === 1;
-              setFlashEnabled(enabled);
-              saveSettings('flashEnabled', enabled);
-            }}
-            minimumTrackTintColor={COLORS.primary}
-            maximumTrackTintColor="rgba(255,255,255,0.2)"
-            thumbTintColor={COLORS.primary}
-          />
-        </View>
+        )}
 
-        {/* Alarm Frequency (Sensitivity) Slider */}
-        <View style={styles.sliderGroup}>
-          <View style={styles.sliderLabelRow}>
-            <Text style={styles.sliderLabel}>🎚️ 감지 민감도</Text>
-            <Text style={styles.sliderValue}>{Math.round(sensitivity * 100)}%</Text>
+        {/* Flash Cycle Slider - only show when flash is enabled */}
+        {flashEnabled && (
+          <View style={styles.sliderGroup}>
+            <Text style={styles.sliderLabel}>💡 {lang === 'ko' ? '플래시 주기' : 'Flash'}</Text>
+            <Slider
+              style={styles.slider}
+              minimumValue={CONFIG.FLASH_INTENSITY?.MIN || 100}
+              maximumValue={CONFIG.FLASH_INTENSITY?.MAX || 2000}
+              step={CONFIG.FLASH_INTENSITY?.STEP || 100}
+              value={flashIntensity}
+              onValueChange={(value) => setFlashIntensity(value)}
+              onSlidingComplete={(value) => saveSettings('flashIntensity', value)}
+              minimumTrackTintColor={COLORS.warning}
+              maximumTrackTintColor="rgba(255,255,255,0.2)"
+              thumbTintColor={COLORS.warning}
+              accessibilityRole="adjustable"
+            />
+            <Text style={[styles.sliderValue, { color: COLORS.warning }]}>{(flashIntensity / 1000).toFixed(1)}s</Text>
           </View>
+        )}
+
+        {/* Flash Pattern Selector - only show when flash is enabled */}
+        {flashEnabled && (
+          <View style={styles.patternQuickSelect}>
+            <Text style={styles.patternQuickLabel}>💡 {lang === 'ko' ? '플래시 패턴' : 'Flash Pattern'}</Text>
+            <View style={styles.patternGrid}>
+              {[
+                { key: 'single', label: lang === 'ko' ? '1회' : '1x' },
+                { key: 'double', label: lang === 'ko' ? '2회' : '2x' },
+                { key: 'triple', label: lang === 'ko' ? '3회' : '3x' },
+                { key: 'heartbeat', label: lang === 'ko' ? '심장박동' : 'Heartbeat' },
+                { key: 'continuous', label: lang === 'ko' ? '연속' : 'Continuous' },
+                { key: 'escalate', label: lang === 'ko' ? '점점강하게' : 'Escalate' },
+                { key: 'sos', label: 'SOS' },
+                { key: 'pulse', label: lang === 'ko' ? '펄스' : 'Pulse' },
+              ].map((item) => (
+                <TouchableOpacity
+                  key={item.key}
+                  style={[
+                    styles.patternPill,
+                    flashPattern === item.key && styles.patternPillActive,
+                    { borderColor: flashPattern === item.key ? COLORS.warning : 'rgba(255,255,255,0.1)' },
+                  ]}
+                  onPress={() => {
+                    setFlashPattern(item.key);
+                    saveSettings('flashPattern', item.key);
+                    // Preview flash pattern
+                    executeTorchPattern(item.key, flashIntensity);
+                  }}
+                  activeOpacity={0.7}
+                  accessibilityRole="button"
+                  accessibilityLabel={item.label}
+                  accessibilityState={{ selected: flashPattern === item.key }}
+                >
+                  <Text style={[
+                    styles.patternPillText,
+                    flashPattern === item.key && styles.patternPillTextActive,
+                  ]}>
+                    {item.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        )}
+
+        {/* Torch (Camera Flash) Cycle Slider - only show when torch is enabled */}
+        {torchEnabled && (
+          <View style={styles.sliderGroup}>
+            <Text style={styles.sliderLabel}>🔦 {lang === 'ko' ? '손전등 주기' : 'Torch'}</Text>
+            <Slider
+              style={styles.slider}
+              minimumValue={CONFIG.FLASH_INTENSITY?.MIN || 100}
+              maximumValue={CONFIG.FLASH_INTENSITY?.MAX || 2000}
+              step={CONFIG.FLASH_INTENSITY?.STEP || 100}
+              value={torchIntensity}
+              onValueChange={(value) => setTorchIntensity(value)}
+              onSlidingComplete={(value) => saveSettings('torchIntensity', value)}
+              minimumTrackTintColor="#FF6B35"
+              maximumTrackTintColor="rgba(255,255,255,0.2)"
+              thumbTintColor="#FF6B35"
+              accessibilityRole="adjustable"
+            />
+            <Text style={[styles.sliderValue, { color: '#FF6B35' }]}>{(torchIntensity / 1000).toFixed(1)}s</Text>
+          </View>
+        )}
+
+        {/* Torch Pattern Selector - only show when torch is enabled */}
+        {torchEnabled && (
+          <View style={styles.patternQuickSelect}>
+            <Text style={styles.patternQuickLabel}>🔦 {lang === 'ko' ? '손전등 패턴' : 'Torch Pattern'}</Text>
+            <View style={styles.patternGrid}>
+              {[
+                { key: 'single', label: lang === 'ko' ? '1회' : '1x' },
+                { key: 'double', label: lang === 'ko' ? '2회' : '2x' },
+                { key: 'triple', label: lang === 'ko' ? '3회' : '3x' },
+                { key: 'heartbeat', label: lang === 'ko' ? '심장박동' : 'Heartbeat' },
+                { key: 'continuous', label: lang === 'ko' ? '연속' : 'Continuous' },
+                { key: 'escalate', label: lang === 'ko' ? '점점강하게' : 'Escalate' },
+                { key: 'sos', label: 'SOS' },
+                { key: 'pulse', label: lang === 'ko' ? '펄스' : 'Pulse' },
+              ].map((item) => (
+                <TouchableOpacity
+                  key={item.key}
+                  style={[
+                    styles.patternPill,
+                    torchPattern === item.key && styles.patternPillActive,
+                    { borderColor: torchPattern === item.key ? '#FF6B35' : 'rgba(255,255,255,0.1)' },
+                  ]}
+                  onPress={() => {
+                    setTorchPattern(item.key);
+                    saveSettings('torchPattern', item.key);
+                    // Preview torch pattern
+                    executeTorchFlash(item.key, torchIntensity);
+                  }}
+                  activeOpacity={0.7}
+                  accessibilityRole="button"
+                  accessibilityLabel={item.label}
+                  accessibilityState={{ selected: torchPattern === item.key }}
+                >
+                  <Text style={[
+                    styles.patternPillText,
+                    torchPattern === item.key && styles.patternPillTextActive,
+                  ]}>
+                    {item.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        )}
+
+        {/* Posture Detection Sensitivity Slider */}
+        <View style={styles.sliderGroup}>
+          <Text style={styles.sliderLabel}>🎚️ {lang === 'ko' ? '자세감지 민감도' : 'Sensitivity'}</Text>
           <Slider
             style={styles.slider}
             minimumValue={0.1}
@@ -1496,10 +1652,14 @@ export default function App() {
             minimumTrackTintColor={COLORS.primary}
             maximumTrackTintColor="rgba(255,255,255,0.2)"
             thumbTintColor={COLORS.primary}
+            accessibilityRole="adjustable"
           />
+          <Text style={styles.sliderValue}>{Math.round(sensitivity * 100)}%</Text>
         </View>
 
-        {/* Stop/Start Session Button */}
+        </>)}
+
+        {/* Stop/Start Session Button - always visible */}
         <TouchableOpacity
           style={[
             styles.stopButton,
@@ -1509,45 +1669,26 @@ export default function App() {
           onPress={toggleMonitoring}
           activeOpacity={0.8}
           disabled={isProcessing}
+          accessibilityRole="button"
+          accessibilityLabel={isMonitoring ? t.stopMonitoring : t.startMonitoring}
+          accessibilityState={{ disabled: isProcessing }}
         >
           <Text style={styles.stopButtonIcon}>{isMonitoring ? '⏹' : '▶'}</Text>
           <Text style={styles.stopButtonText}>
             {isMonitoring ? 'STOP SESSION' : 'START SESSION'}
           </Text>
         </TouchableOpacity>
-      </View>
+        </View>
+      )}
+
+      </View>{/* End Main Content Wrapper */}
 
       {/* Ad Banner */}
-      {!hideAds && <AdBanner />}
+      {/* Ad banner removed for cleaner UI */}
 
-      {/* Modals */}
-      <SettingsModal
-        visible={showSettings}
-        onClose={() => setShowSettings(false)}
-        sensitivity={sensitivity}
-        setSensitivity={setSensitivity}
-        vibrationEnabled={vibrationEnabled}
-        setVibrationEnabled={setVibrationEnabled}
-        vibrationIntensity={vibrationIntensity}
-        setVibrationIntensity={setVibrationIntensity}
-        vibrationPattern={vibrationPattern}
-        setVibrationPattern={setVibrationPattern}
-        flashEnabled={flashEnabled}
-        setFlashEnabled={setFlashEnabled}
-        flashPattern={flashPattern}
-        setFlashPattern={setFlashPattern}
-        alertEnabled={alertEnabled}
-        setAlertEnabled={setAlertEnabled}
-        saveSettings={saveSettings}
-        onShowPrivacyPolicy={showPrivacyPolicy}
-        t={t}
-      />
-      <StatsModal
-        visible={showStats}
-        onClose={() => setShowStats(false)}
-        stats={statsData}
-        t={t}
-      />
+      {/* Modals - hidden in PiP mode */}
+      {!pipActive && (
+      <>
       <SessionResultModal
         visible={showSessionResult}
         onClose={() => setShowSessionResult(false)}
@@ -1559,16 +1700,52 @@ export default function App() {
         onClose={() => setShowPremium(false)}
         lang={lang}
       />
+      </>
+      )}
 
-      {/* Screen Flash Overlay - 화면 깜빡임 알림 */}
-      {showFlashOverlay && (
+      {/* Session End Toast - hidden in PiP */}
+      {!pipActive && showToast && (
+        <Animated.View style={[styles.toastContainer, { opacity: toastAnim }]} pointerEvents="box-none">
+          <Text style={styles.toastText}>세션이 종료되었습니다</Text>
+          <TouchableOpacity
+            onPress={() => {
+              setShowSessionResult(true);
+              setShowToast(false);
+              toastAnim.setValue(0);
+              if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+            }}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.toastAction}>결과보기</Text>
+          </TouchableOpacity>
+        </Animated.View>
+      )}
+
+      {/* Desk Clock Overlay - hidden in PiP */}
+      {!pipActive && screenOffMode && (
+        <DeskClock
+          onDismiss={() => { setScreenOffMode(false); saveSettings('screenOffMode', false); }}
+          isMonitoring={isMonitoring}
+          sessionTime={sessionTime}
+          goodPostureRate={goodPostureRate}
+          clockSettings={clockSettings}
+          onSettingsChange={handleClockSettingChange}
+          formatTime={formatTime}
+          lang={lang}
+          t={t}
+        />
+      )}
+
+      {/* Screen Flash Overlay - hidden in PiP */}
+      {!pipActive && showFlashOverlay && (
         <View style={styles.flashOverlay} pointerEvents="none" />
       )}
     </SafeAreaView>
   );
 }
 
-const styles = StyleSheet.create({
+// Legacy styles - now imported from ./components/styles.js
+const _styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.background },
   centerContent: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   loadingText: { color: COLORS.text, fontSize: 16 },
@@ -1594,6 +1771,10 @@ const styles = StyleSheet.create({
   permissionButton: { backgroundColor: COLORS.primary, paddingVertical: 16, paddingHorizontal: 40, borderRadius: 12 },
   permissionButtonText: { color: COLORS.text, fontSize: 18, fontWeight: 'bold' },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, paddingTop: Platform.OS === 'android' ? 48 : 12, position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10 },
+  headerCenter: { flex: 1, alignItems: 'center', marginHorizontal: 8 },
+  headerStatusBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, backgroundColor: 'rgba(26, 44, 34, 0.9)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)' },
+  headerStatusEmoji: { fontSize: 16, marginRight: 6 },
+  headerStatusText: { fontSize: 13, fontWeight: '600', color: COLORS.text },
   headerTitle: { fontSize: 14, fontWeight: '700', color: COLORS.text, letterSpacing: 3, textTransform: 'uppercase' },
   headerButton: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(26, 44, 34, 0.9)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
   headerButtonIcon: { fontSize: 18 },
@@ -1616,13 +1797,34 @@ const styles = StyleSheet.create({
   guideEmoji: { fontSize: 56, marginBottom: 16 },
   guideText: { fontSize: 18, color: COLORS.text, textAlign: 'center', lineHeight: 26, fontWeight: '500' },
   guideHint: { fontSize: 13, color: COLORS.textMuted, marginTop: 12, textAlign: 'center' },
-  bottomPanel: { backgroundColor: 'rgba(26, 44, 34, 0.9)', paddingHorizontal: 20, paddingVertical: 16, borderTopLeftRadius: 24, borderTopRightRadius: 24, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', borderBottomWidth: 0 },
-  // Slider styles
-  sliderGroup: { marginBottom: 4 },
-  sliderLabelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 4, marginBottom: -4 },
-  sliderLabel: { fontSize: 13, color: COLORS.textMuted, fontWeight: '500' },
-  sliderValue: { fontSize: 13, color: COLORS.primary, fontWeight: '600' },
-  slider: { flex: 1, height: 36 },
+  bottomPanel: { backgroundColor: 'rgba(26, 44, 34, 0.95)', paddingHorizontal: 20, paddingVertical: 16, borderTopLeftRadius: 28, borderTopRightRadius: 28, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)', borderBottomWidth: 0 },
+  // Toggle button row styles
+  toggleRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12, gap: 12 },
+  toggleButton: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 16, paddingVertical: 14, paddingHorizontal: 12, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.1)' },
+  toggleButtonActive: { backgroundColor: 'rgba(25, 230, 107, 0.15)', borderColor: COLORS.primary },
+  toggleIcon: { fontSize: 20, marginRight: 8 },
+  toggleLabel: { fontSize: 15, fontWeight: '600', color: COLORS.textSecondary, marginRight: 8 },
+  toggleLabelActive: { color: COLORS.text },
+  toggleIndicator: { backgroundColor: 'rgba(255,255,255,0.1)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
+  toggleIndicatorActive: { backgroundColor: COLORS.primary },
+  toggleIndicatorText: { fontSize: 12, fontWeight: '700', color: COLORS.text },
+  // Pattern quick select styles
+  patternQuickSelect: { marginBottom: 12, backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10 },
+  patternQuickLabel: { fontSize: 15, color: COLORS.text, fontWeight: '600', marginBottom: 8, paddingHorizontal: 4 },
+  patternScrollRow: { flexDirection: 'row' },
+  patternPill: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.08)', marginRight: 8, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  patternPillActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  patternPillText: { fontSize: 13, color: COLORS.textSecondary, fontWeight: '600' },
+  patternPillTextActive: { color: COLORS.background },
+  // Slider styles - larger and more touch-friendly
+  sliderGroup: { marginBottom: 12, backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 8 },
+  sliderGroupDisabled: { opacity: 0.4 },
+  sliderLabelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 4, marginBottom: 2 },
+  sliderLabel: { fontSize: 15, color: COLORS.text, fontWeight: '600' },
+  sliderLabelDisabled: { color: COLORS.textMuted },
+  sliderValue: { fontSize: 15, color: COLORS.primary, fontWeight: '700' },
+  sliderValueDisabled: { color: COLORS.textMuted },
+  slider: { flex: 1, height: 44 },
   // Stop/Start button
   stopButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(26, 44, 34, 0.8)', paddingVertical: 14, borderRadius: 12, marginTop: 8, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
   startButton: { backgroundColor: COLORS.primary },
